@@ -1,0 +1,13 @@
+# Virtual Environment
+venv/
+.venv/
+
+# Streamlit Secrets - This is the most important line for your security
+.streamlit/secrets.toml
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# VS Code settings folder
+.vscode/
