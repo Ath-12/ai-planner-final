@@ -1,8 +1,10 @@
 # .streamlit/config.toml
 
 [theme]
-primaryColor="#f63366"
-backgroundColor="#00172B"
-secondaryBackgroundColor="#0083B8"
-textColor="#FFFFFF"
+base="dark" # Set dark mode as default
+primaryColor="#FF6347" # Vibrant Tomato Orange
 font="sans serif"
+# Ensure text/background colors defined here don't clash with CSS
+backgroundColor="#001A33" # Match CSS --bg-dark
+secondaryBackgroundColor="#003366" # Match CSS --secondary-bg-dark
+textColor="#FFE5CC" # Match CSS --text-dark
