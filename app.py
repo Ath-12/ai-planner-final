@@ -3,6 +3,7 @@ import google.generativeai as genai
 import os
 import requests  # For currency conversion
 import datetime  # To get current month as default
+from PIL import Image
 
 # ---
 # FINAL APP.PY for NomadSquad
@@ -173,10 +174,13 @@ def get_exchange_rate(home_currency="INR", dest_currency="USD"):
         if data.get("result") == "success":
             return data.get("conversion_rate", 1.0), dest_currency
         else:
-            print(f"Failed to get exchange rate: {data.get('error-type', 'Unknown error')}")
+            # --- NEW: SHOW A WARNING TO THE USER ---
+            st.warning(f"Could not fetch live exchange rate for {home_currency}/{dest_currency}. Using a default rate.")
             return 1.0, dest_currency
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching exchange rate: {e}")
+        # --- NEW: SHOW A WARNING TO THE USER ---
+        st.warning(f"Could not fetch live exchange rate due to a network error. Using a default rate.")
+        print(f"Error fetching exchange rate: {e}") # Keep this for your own logs
         return 1.0, dest_currency
 
 # --- Function to get response from Gemini AI ---
