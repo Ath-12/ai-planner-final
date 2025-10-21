@@ -52,7 +52,7 @@ To run this project on your own machine, follow these steps:
 
 Clone the Repository:
 
-git clone [https://github.com/Ath-12/NomadSquad.git](https://github.com/Ath-12/NomadSquad.git)
+git clone [https://github.com/Ath-12/ai-planner-final.git](https://github.com/Ath-12/ai-planner-final.git)
 cd NomadSquad
 
 
