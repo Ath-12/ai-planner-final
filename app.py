@@ -1,74 +1,35 @@
 import streamlit as st
 import google.generativeai as genai
-import os
-import requests  # For currency conversion
-import datetime  # To get current month as default
-from PIL import Image
+import os, requests, datetime, io
+from PIL import Image, ImageDraw, ImageFont
+import urllib.parse as up
 
-# ---
-# FINAL APP.PY for NomadSquad
-# This version includes all fixes and features:
-# 1. Permanent Dark Mode (no toggle).
-# 2. CSS is embedded directly in this file (no 'assets' folder needed).
-# 3. All input boxes are styled to be circular, fixing UI overlap.
-# 4. Currency conversion is now real-time, outside the main form.
-# 5. The AI prompt is heavily refined to produce longer, more structured, and more fun responses.
-# 6. "Destination Country" dropdown has been removed for flexibility.
-# ---
-
-# --- Initialize session state ---
-if 'home_budget' not in st.session_state:
-    st.session_state.home_budget = 2000
-if 'exchange_rate' not in st.session_state:
-    st.session_state.exchange_rate = 1.0
-if 'dest_currency' not in st.session_state:
-    st.session_state.dest_currency = "INR"
-if 'home_currency' not in st.session_state:
-    st.session_state.home_currency = "INR"
-if 'dest_currency_select' not in st.session_state:
-    st.session_state.dest_currency_select = "INR"
-
-# --- FUNCTION TO LOAD EMBEDDED CSS ---
+# ======================
+# Styling (your CSS kept)
+# ======================
 def load_embedded_css():
-    """
-    This function contains all the CSS for styling the app.
-    It's embedded here to keep the project in a single file as requested.
-    """
     css_styles = """
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
-
-    /* Define Color Variables (Dark Mode Focused) */
     :root {
-        --primary-color: #FF6347; /* Tomato Orange */
-        --accent-color: #FFD700; /* Gold */
-        --link-color: #FFA500; /* Orange */
-        --bg-dark: #001A33; /* Very Dark Navy */
-        --secondary-bg-dark: #003366; /* Dark Navy */
-        --text-dark: #FFE5CC; /* Light Peach */
-        --subtle-border-dark: #004C99; /* Medium Navy */
+        --primary-color: #FF6347;
+        --accent-color: #FFD700;
+        --link-color: #FFA500;
+        --bg-dark: #001A33;
+        --secondary-bg-dark: #003366;
+        --text-dark: #FFE5CC;
+        --subtle-border-dark: #004C99;
     }
-
-    /* General Styling & Permanent Dark Mode */
-    body, .stApp {
-        font-family: 'Poppins', sans-serif;
-        background-color: var(--bg-dark) !important;
-        color: var(--text-dark);
-    }
+    body, .stApp { font-family: 'Poppins', sans-serif; background-color: var(--bg-dark) !important; color: var(--text-dark); }
     a { color: var(--link-color); text-decoration: none; transition: color 0.2s ease; }
     a:hover { color: var(--primary-color); text-decoration: underline; }
-
     .main .block-container {
         background-color: var(--secondary-bg-dark);
         border: 1px solid var(--subtle-border-dark);
-        border-radius: 25px;
-        padding: 2rem 2.5rem;
-        box-shadow: 0 12px 45px rgba(0, 0, 0, 0.2);
-        animation: fadeIn 0.6s ease-out;
+        border-radius: 25px; padding: 2rem 2.5rem;
+        box-shadow: 0 12px 45px rgba(0,0,0,0.2); animation: fadeIn 0.6s ease-out;
     }
-    h1, h2, h3 { color: var(--text-dark); font-weight: 700;}
+    h1, h2, h3 { color: var(--text-dark); font-weight: 700; }
     label { color: var(--text-dark) !important; font-weight: 600 !important; }
-
-    /* --- UNIFIED CIRCULAR STYLING FOR ALL INPUTS --- */
     .stTextInput > div > div > input,
     .stTextArea > div > div > textarea,
     .stNumberInput > div > div > input,
@@ -76,340 +37,418 @@ def load_embedded_css():
     div[data-testid="stMultiselect"] > div[data-baseweb="select"] {
         background-color: var(--bg-dark) !important;
         border: 1px solid var(--subtle-border-dark) !important;
-        color: var(--text-dark) !important;
-        border-radius: 50px !important; /* Pill shape for ALL */
-        transition: all 0.2s ease;
-        padding-left: 20px !important; /* Consistent padding */
+        color: var(--text-dark) !important; border-radius: 50px !important;
+        transition: all 0.2s ease; padding-left: 20px !important;
     }
-
-    /* Input Focus Style (All Inputs) */
-    .stTextInput input:focus,
-    .stTextArea textarea:focus,
+    .stTextInput input:focus, .stTextArea textarea:focus,
     .stSelectbox div[data-baseweb="select"]:focus-within,
-    .stMultiSelect div[data-baseweb="select"]:focus-within,
-    .stNumberInput input:focus {
-         border-color: var(--primary-color) !important;
-         box-shadow: 0 0 12px rgba(255, 99, 71, 0.5); /* Orange Glow */
+    .stMultiSelect div[data-baseweb="select"]:focus-within, .stNumberInput input:focus {
+        border-color: var(--primary-color) !important; box-shadow: 0 0 12px rgba(255,99,71,.5);
     }
-    
-    /* Dropdown menu styling */
     div[data-baseweb="popover"] ul[role="listbox"] {
-        background-color: var(--secondary-bg-dark) !important;
-        border-radius: 15px !important;
+        background-color: var(--secondary-bg-dark) !important; border-radius: 15px !important;
         border: 1px solid var(--subtle-border-dark) !important;
     }
     div[data-baseweb="popover"] li[role="option"] { color: var(--text-dark) !important; }
     div[data-baseweb="popover"] li[aria-selected="true"] { background-color: var(--primary-color) !important; color: white !important; }
-    div[data-baseweb="popover"] li:hover { background-color: rgba(255, 99, 71, 0.2) !important; }
-
-    /* Main Generate Button */
+    div[data-baseweb="popover"] li:hover { background-color: rgba(255,99,71,0.2) !important; }
     div[data-testid="stFormSubmitButton"] button {
         background: linear-gradient(45deg, var(--primary-color), #FF8C00);
         color: white; border-radius: 50px; padding: 12px 35px;
         font-weight: 700; font-size: 17px; border: none;
-        box-shadow: 0 6px 20px 0 rgba(0, 0, 0, 0.25);
-        transition: all 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        box-shadow: 0 6px 20px rgba(0,0,0,.25); transition: all .35s cubic-bezier(.175,.885,.32,1.275);
         cursor: pointer;
     }
-    div[data-testid="stFormSubmitButton"] button:hover {
-        box-shadow: 0 0 30px var(--accent-color);
-        transform: translateY(-4px) scale(1.03);
-    }
-
-    /* Tab Styling */
+    div[data-testid="stFormSubmitButton"] button:hover { box-shadow: 0 0 30px var(--accent-color); transform: translateY(-4px) scale(1.03); }
     div[data-baseweb="tab-list"] {
-        display: flex; justify-content: center; border-bottom: none !important;
-        margin-bottom: 2rem; padding: 6px;
-        background-color: rgba(255, 255, 255, 0.05);
-        border-radius: 50px;
+        display:flex; justify-content:center; border-bottom:none !important; margin-bottom:2rem; padding:6px;
+        background-color: rgba(255,255,255,0.05); border-radius:50px;
     }
     button[data-baseweb="tab"] {
-        font-size: 16px; font-weight: 600; padding: 12px 30px;
-        border-radius: 50px; margin: 0 5px; border: none;
-        background-color: transparent; color: var(--text-dark);
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        font-size:16px; font-weight:600; padding:12px 30px; border-radius:50px; margin:0 5px; border:none;
+        background:transparent; color:var(--text-dark); transition:all .4s cubic-bezier(.175,.885,.32,1.275);
     }
     button[data-baseweb="tab"][aria-selected="true"] {
-        background-color: var(--primary-color);
-        color: white !important;
-        box-shadow: 0 5px 20px rgba(255, 99, 71, 0.5);
-        transform: scale(1.05);
+        background-color:var(--primary-color); color:white !important; box-shadow:0 5px 20px rgba(255,99,71,.5); transform:scale(1.05);
     }
     button[data-baseweb="tab"][aria-selected="false"]:hover {
-       background-color: rgba(255, 99, 71, 0.15);
-       color: var(--primary-color) !important;
-       transform: translateY(-3px);
+        background-color:rgba(255,99,71,.15); color:var(--primary-color) !important; transform: translateY(-3px);
     }
-
-    /* Layout & Animations */
-    .stForm > div { gap: 1.2rem; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
-    .stSpinner > div > div {
-        border-top-color: var(--primary-color) !important;
-    }
+    .stForm > div { gap:1.2rem; }
+    @keyframes fadeIn { from {opacity:0; transform:translateY(15px);} to {opacity:1; transform:translateY(0);} }
+    .stSpinner > div > div { border-top-color: var(--primary-color) !important; }
     """
-    st.markdown(f'<style>{css_styles}</style>', unsafe_allow_html=True)
+    st.markdown(f"<style>{css_styles}</style>", unsafe_allow_html=True)
 
 load_embedded_css()
 
-# --- Load API Keys ---
+# ======================
+# API KEYS
+# ======================
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-    EXCHANGE_RATE_API_KEY = st.secrets.get("EXCHANGE_RATE_API_KEY", None)
 except KeyError:
-    st.error("GEMINI_API_KEY not found! Please add it to your .streamlit/secrets.toml file.")
+    st.error("GEMINI_API_KEY not found in .streamlit/secrets.toml")
     st.stop()
 
+PPLX_API_KEY = st.secrets.get("PPLX_API_KEY")
+EXCHANGE_RATE_API_KEY = st.secrets.get("EXCHANGE_RATE_API_KEY")
 
-# --- Currency Conversion Function ---
+# ======================
+# SESSION STATE (PERSISTENCE)
+# ======================
+if "home_budget" not in st.session_state: st.session_state.home_budget = 2000
+if "exchange_rate" not in st.session_state: st.session_state.exchange_rate = 1.0
+if "dest_currency" not in st.session_state: st.session_state.dest_currency = "INR"
+if "home_currency" not in st.session_state: st.session_state.home_currency = "INR"
+if "dest_currency_select" not in st.session_state: st.session_state.dest_currency_select = "INR"
+
+# Persist generated outputs
+if "final_output" not in st.session_state: st.session_state.final_output = None
+if "links_output" not in st.session_state: st.session_state.links_output = []
+
+# ======================
+# HELPERS
+# ======================
 @st.cache_data(ttl=3600)
 def get_exchange_rate(home_currency="INR", dest_currency="USD"):
     if not EXCHANGE_RATE_API_KEY or home_currency == dest_currency:
         return 1.0, dest_currency
     url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/pair/{home_currency}/{dest_currency}"
     try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("result") == "success":
-            return data.get("conversion_rate", 1.0), dest_currency
-        else:
-            # --- NEW: SHOW A WARNING TO THE USER ---
-            st.warning(f"Could not fetch live exchange rate for {home_currency}/{dest_currency}. Using a default rate.")
-            return 1.0, dest_currency
-    except requests.exceptions.RequestException as e:
-        # --- NEW: SHOW A WARNING TO THE USER ---
-        st.warning(f"Could not fetch live exchange rate due to a network error. Using a default rate.")
-        print(f"Error fetching exchange rate: {e}") # Keep this for your own logs
-        return 1.0, dest_currency
+        r = requests.get(url, timeout=6); r.raise_for_status()
+        data = r.json()
+        if data.get("result") == "success": return data.get("conversion_rate", 1.0), dest_currency
+        st.warning("Could not fetch live exchange rate. Using 1.0")
+    except Exception:
+        st.warning("Network error fetching exchange rate. Using 1.0")
+    return 1.0, dest_currency
 
-# --- Function to get response from Gemini AI ---
-def get_ai_response(api_key, destination, duration, people, budget_dest_currency, dest_currency_code, travel_vibe, accommodation, pace,
-                    origin_country, origin_city, transport_to_dest, travel_month,
-                    food_prefs, transport_prefs_local, special_requests):
+def maps_search_url(query: str) -> str:
+    return f"https://www.google.com/maps/search/?api=1&query={up.quote(query)}"
+
+def pplx_research(query:str, model:str="sonar-pro", k:int=8):
+    if not PPLX_API_KEY: return "", []
+    url = "https://api.perplexity.ai/chat/completions"
+    headers = {"Authorization": f"Bearer {PPLX_API_KEY}", "Content-Type":"application/json"}
+    payload = {
+        "model": model,  # "sonar-pro" (fast) or "sonar-deep-research" (deeper)
+        "messages": [
+            {"role":"system","content":"Be precise, add trustworthy links (official or major OTAs), concise bullets."},
+            {"role":"user","content": f"Find high-quality booking pages and review links: {query}. Prefer official hotel sites or major OTAs. 6–8 best links."}
+        ],
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "max_tokens": 1200
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r.raise_for_status()
+        js = r.json()
+        text = js["choices"][0]["message"]["content"]
+        results = js.get("search_results", []) or []
+        links = []
+        for it in results[:k]:
+            links.append({"title": it.get("title","Link"), "url": it.get("url","#"), "date": it.get("date","")})
+        return text, links
+    except Exception as e:
+        st.info(f"Perplexity research unavailable ({e})."); return "", []
+
+def make_gemini_itinerary(api_key, prompt):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('models/gemini-pro-latest')
-
-    accomm_str = ", ".join(accommodation) if accommodation else "Any suitable"
-    vibe_str = ", ".join(travel_vibe) if travel_vibe else "General Tourist"
-    food_str = ", ".join(food_prefs) if food_prefs else "No specific preferences"
-
-    # --- FINAL, MOST ROBUST PROMPT ---
-    prompt = (
-        f"You are NomadSquad, the ultimate AI travel companion! Your personality is adventurous, witty, and super enthusiastic. Your tagline is 'Books in one hand, backpack in the other.' Your goal is to generate an incredibly exciting, vibrant, practical, and personalized travel plan that makes the user feel like their adventure has already begun! Use a fun, encouraging tone, lots of relevant emojis (like 🗺️, ✈️, 🍜, 🏨, ✨), and rich, descriptive language."
-        f"\n--- NomadSquad's Mission Briefing (User's Trip Details) ---"
-        f"\nOrigin: {origin_city}, {origin_country}"
-        f"\nDream Destination: {destination}"
-        f"\nTime of Adventure: {travel_month}"
-        f"\nTrip Length: {duration} glorious days"
-        f"\nTravel Crew: {people} person(s)"
-        f"\nDaily Budget Goal (per person): Approx. {budget_dest_currency:.0f} {dest_currency_code}"
-        f"\nArrival Method: {transport_to_dest}"
-        f"\nAccommodation Style: {accomm_str}"
-        f"\nDesired Vibe: {vibe_str}"
-        f"\nTravel Pace: {pace}"
-        f"\nFoodie Preferences: {food_str}"
-        f"\nLocal Transport Choice: {transport_prefs_local}"
-        f"\nSpecial Requests / Must-Dos: {special_requests if special_requests else 'None'}"
-
-        f"\n--- Your Itinerary Blueprint ---"
-        f"\n**Be SUPER Descriptive & Fun!** Paint a vivid picture! Make recommendations sound irresistible!"
-        f"\n**Flawlessly Blend ALL Preferences:** Create a cohesive plan reflecting ALL inputs."
-        f"\n**Master of Seasons (Critical!):**"
-        f"  - Vividly describe the weather AND atmosphere in {destination} during {travel_month} (Celsius)."
-        f"  - Give specific packing advice."
-        f"  - Explain the season type (Peak/Off/Shoulder) & impact."
-        f"  - Suggest the *best* time to visit if different."
-
-        f"\n1.  **Daily Plan:** A logical, exciting, detailed plan. Describe the *feeling* of places. Weave in Special Requests like hidden treasures."
-        f"\n2.  **Accommodation:** Suggest 1-2 specific places matching style & budget (mention budget in {dest_currency_code}). Say *why* they rock."
-        f"\n3.  **Activities:** Tailor activities richly to Vibe. Describe the *experience*. Include Must-Sees."
-        f"\n4.  **Food Quest:** Recommend specific, mouth-watering eateries/dishes considering Food Prefs/Vibe. Describe vividly! Give budget hints in {dest_currency_code}."
-        f"\n5.  **Getting Around:** Arrival options. *Example* generic links ONLY if origin/dest countries match. State clearly 'These are just starting points, check official sites!'. Local transport advice based on preference, costs in {dest_currency_code}, safety tips."
-        f"\n6.  **Local Lingo:** Include a small section in the tips with 2-3 fun, useful local phrases or slang words with their meanings."
-
-        f"\n--- **ABSOLUTELY CRITICAL OUTPUT FORMATTING** (Use EXACTLY this structure and do not stop early!) ---"
-        f"### 🎉 Your NomadSquad Trip Overview & Seasonal Intel! 🎉\n"
-        f"(Start with an super exciting, personalized intro paragraph. Then include all the Seasonal Context advice. Finally, list and describe the Accommodation Suggestions here. THIS SECTION MUST BE COMPLETE.)\n"
-        f"### 🗺️ Your Awesome {duration}-Day Adventure Itinerary! 🗺️\n"
-        f"(Provide the detailed, super descriptive day-by-day plan here. Use **Day X:** formatting. Be very descriptive and ensure you provide a full plan for all {duration} days. THIS SECTION MUST BE COMPLETE.)\n"
-        f"### ✨ NomadSquad's Pro Tips & Essential Info! ✨\n"
-        f"(Include the detailed Transportation advice: Arrival & Local. Add extra Budget-Saving Tips, Safety/Cultural pointers, and the fun 'Local Lingo' section. THIS SECTION MUST BE COMPLETE.)"
-    )
-
+    cfg = {"max_output_tokens": 8192, "temperature": 0.9}
+    resp = model.generate_content(prompt, generation_config=cfg)
+    if not getattr(resp, "parts", None): return None, "Blocked or empty response."
+    text = resp.text
     try:
-        generation_config_args = {
-            "max_output_tokens": 8192,
-            "temperature": 0.8,
-        }
-        response = model.generate_content(prompt, generation_config=generation_config_args)
+        if resp.candidates and resp.candidates[0].finish_reason and resp.candidates[0].finish_reason.name not in ["STOP","FINISH_REASON_UNSPECIFIED"]:
+            text += "\n\n⚠️ Response may be truncated."
+    except Exception:
+        pass
+    return text, None
 
-        if not response.parts:
-            # Handle safety blocking
-            block_reason = "Unknown"
-            try:
-                if response.prompt_feedback:
-                    block_reason = response.prompt_feedback.block_reason.name
-            except Exception: pass
-            return f"⚠️ **Response Blocked!** Reason: {block_reason}. Please adjust your request."
-        
-        # Handle truncation
-        finish_reason = "Unknown"
-        is_truncated = False
-        try:
-            if response.candidates and response.candidates[0].finish_reason:
-                finish_reason = response.candidates[0].finish_reason.name
-                if finish_reason not in ["STOP", "FINISH_REASON_UNSPECIFIED"]:
-                    is_truncated = True
-        except Exception: pass
-        
-        clean_response = response.text
-        if is_truncated:
-            clean_response += f"\n\n⚠️ **Warning:** The AI response was cut short (stopped due to: {finish_reason}). It might have hit the maximum length limit. Try a shorter trip duration."
-        
-        return clean_response
+# ---------- PDF generation using Pillow (no extra libs)
+def wrap_text_to_width(draw, text, font, max_width):
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            lines.append("")
+            continue
+        words = paragraph.split(" ")
+        line = ""
+        for w in words:
+            test = (line + " " + w).strip()
+            if draw.textlength(test, font=font) <= max_width:
+                line = test
+            else:
+                if line: lines.append(line)
+                line = w
+        if line: lines.append(line)
+    return lines
 
-    except Exception as e:
-        return f"🚨 **Oops! Gemini Error:** {type(e).__name__} - {e}."
+def markdown_to_plain(md: str) -> str:
+    # quick-and-simple: strip ** and headings for readable PDF
+    lines = []
+    for raw in md.splitlines():
+        s = raw.replace("**","").replace("__","")
+        s = s.replace("###","").replace("##","").replace("#","").lstrip()
+        lines.append(s)
+    return "\n".join(lines)
 
+def build_pdf_bytes(markdown_text: str, title: str="NomadSquad Itinerary"):
+    W, H = 1240, 1754          # roughly A4 at ~150 DPI
+    M = 80
+    font_title = ImageFont.load_default()
+    font_body = ImageFont.load_default()
 
-# --- Main Application UI ---
+    pages = []
+    text = f"{title}\n\n" + markdown_to_plain(markdown_text)
+
+    temp = Image.new("RGB", (W, H), "white")
+    draw_temp = ImageDraw.Draw(temp)
+
+    y = M
+    page = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(page)
+
+    # Title
+    for t in wrap_text_to_width(draw, title, font_title, W - 2*M):
+        draw.text((M, y), t, font=font_title, fill="black")
+        y += 28
+    y += 10
+
+    # Body
+    for line in wrap_text_to_width(draw_temp, text, font_body, W - 2*M):
+        if y > H - M:  # new page
+            pages.append(page)
+            page = Image.new("RGB", (W, H), "white")
+            draw = ImageDraw.Draw(page)
+            y = M
+        draw.text((M, y), line, font=font_body, fill="black")
+        y += 22
+
+    pages.append(page)
+
+    bio = io.BytesIO()
+    pages[0].save(bio, format="PDF", save_all=True, append_images=pages[1:])
+    bio.seek(0)
+    return bio
+
+# ======================
+# UI: Title
+# ======================
 st.title("✈️ NomadSquad")
 st.markdown("##### *Books in one hand, backpack in the other.*")
 st.markdown("---")
 
-# --- CURRENCY & BUDGET SECTION (Outside Form for Real-Time Update) ---
+# ======================
+# ORIGIN & BUDGET
+# ======================
 st.subheader("Your Origin & Budget 💸")
-col_orig1, col_orig2 = st.columns(2)
-with col_orig1:
-    countries = ["India", "USA", "UK", "Canada", "Australia", "Germany", "France", "Japan", "Singapore", "UAE", "Thailand", "Italy", "Spain", "Mexico", "Brazil"]
+col1, col2 = st.columns(2)
+with col1:
+    countries = ["India","USA","UK","Canada","Australia","Germany","France","Japan","Singapore","UAE","Thailand","Italy","Spain","Mexico","Brazil"]
     origin_country = st.selectbox("🌍 Your Origin Country", countries, index=0, key='origin_country_sel')
-    currency_codes = ["INR", "USD", "EUR", "GBP", "CAD", "AUD", "JPY", "SGD", "AED", "CHF", "CNY", "BRL", "MXN", "THB"]
+    currency_codes = ["INR","USD","EUR","GBP","CAD","AUD","JPY","SGD","AED","CHF","CNY","BRL","MXN","THB"]
     st.session_state.home_currency = st.selectbox("🏠 Your Home Currency", currency_codes, index=0, key='home_currency_sel')
-with col_orig2:
+with col2:
     origin_city = st.text_input("🏙️ Your Origin City", placeholder="Enter Origin City...")
-    # Destination currency is now inside the form, but we need a value for real-time conversion
-    # Let's use a temporary selector here for the conversion logic
     st.session_state.dest_currency_select = st.selectbox("💲 Destination Currency (for conversion)", currency_codes, index=1, key='dest_currency_selector')
 
-# Fetch rate and update session state
 rate, actual_dest_code = get_exchange_rate(st.session_state.home_currency, st.session_state.dest_currency_select)
 st.session_state.exchange_rate = rate
 st.session_state.dest_currency = actual_dest_code
 
-# Home Currency Slider with updated limit
-max_budget_home = 50000
-if st.session_state.home_currency == "JPY": max_budget_home = 5000000
+max_budget_home = 50000 if st.session_state.home_currency != "JPY" else 5000000
 st.session_state.home_budget = st.slider(f"💰 Budget per person/day ({st.session_state.home_currency})", 100, max_budget_home, st.session_state.home_budget, 100)
 
-# Display Converted Budget Dynamically
 converted_budget = st.session_state.home_budget * st.session_state.exchange_rate
 st.markdown(f"👉 Approx. **{converted_budget:,.2f} {st.session_state.dest_currency}** per person/day")
+st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(origin_city or "Your city"))
 st.markdown("---")
 
-# --- MAIN FORM FOR OTHER INPUTS ---
+# ======================
+# FORM
+# ======================
 with st.form("planner_form"):
     st.header("Tell NomadSquad About Your Dream Trip! ✨")
-
-    # Destination input (single text box)
     destination = st.text_input("📍 Destination (City, Country)", placeholder="e.g., Paris, France")
-
     duration = st.number_input("📅 Trip Duration (days)", min_value=1, max_value=30, value=5)
     num_people = st.number_input("👥 Number of People", min_value=1, max_value=20, value=3)
 
     st.subheader("Your Journey Details 🗓️")
-    col_jour1, col_jour2 = st.columns(2)
-    with col_jour1:
-         transport_to_dest = st.selectbox("✈️ How are you arriving?", ["Airplane", "Train", "Car", "Bus", "Not Sure Yet"])
-    with col_jour2:
-         current_month_index = datetime.datetime.now().month - 1
-         months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-         travel_month = st.selectbox("📅 Month of Travel", months, index=current_month_index )
+    c1, c2 = st.columns(2)
+    with c1:
+        transport_to_dest = st.selectbox("✈️ How are you arriving?", ["Airplane","Train","Car","Bus","Not Sure Yet"])
+    with c2:
+        current_month_index = datetime.datetime.now().month - 1
+        months = ["January","February","March","April","May","June","July","August","September","October","November","December"]
+        travel_month = st.selectbox("📅 Month of Travel", months, index=current_month_index)
 
     st.subheader("Your Perfect Vibe ✨")
-    travel_vibe = st.multiselect("🌈 Select your vibe(s):",
-                                ["🎉 Party & Nightlife", "🧘 Relax & Recharge", "⛪ Culture & History", "🏞️ Adventure & Outdoors",
-                                 "🍽️ Foodie Heaven", "🛍️ Shopping Spree", "💎 Offbeat & Hidden Gems", "📸 Picture Perfect Spots",
-                                 "🎭 Arts & Theatre", "👩‍💻 Digital Nomad Work Spots", "👨‍👩‍👧‍👦 Family Friendly Fun", "💖 Romantic Getaway"],
-                                 placeholder="Choose your travel style(s)")
+    travel_vibe = st.multiselect(
+        "🌈 Select your vibe(s):",
+        ["🎉 Party & Nightlife","🧘 Relax & Recharge","⛪ Culture & History","🏞️ Adventure & Outdoors",
+         "🍽️ Foodie Heaven","🛍️ Shopping Spree","💎 Offbeat & Hidden Gems","📸 Picture Perfect Spots",
+         "🎭 Arts & Theatre","👩‍💻 Digital Nomad Work Spots","👨‍👩‍👧‍👦 Family Friendly Fun","💖 Romantic Getaway"]
+    )
 
     col_style1, col_style2 = st.columns(2)
     with col_style1:
-        accommodation = st.multiselect("🏨 Preferred Stay:",
-                                       [" hostels (Social & Budget)", " budget hotels (Private & Basic)", " guesthouses/Homestays (Local Feel)",
-                                        " mid-range hotels (Comfort)", " boutique hotels (Stylish)", " luxury resorts (Pampering)",
-                                        " airbnb/Apartments (Independent)", " unique Stays (Treehouse, Boat etc.)"],
-                                        placeholder="Select accommodation type(s)")
+        accommodation = st.multiselect(
+            "🏨 Preferred Stay:",
+            ["hostels (Social & Budget)","budget hotels (Private & Basic)","guesthouses/Homestays (Local Feel)",
+             "mid-range hotels (Comfort)","boutique hotels (Stylish)","luxury resorts (Pampering)",
+             "airbnb/Apartments (Independent)","unique Stays (Treehouse, Boat etc.)"]
+        )
     with col_style2:
-        pace_options = ["🐢 Very Slow (1-2 things/day)", "🚶‍♀️ Relaxed (2-3 things/day)", "🏃‍♀️ Moderate (3-4 things/day)", "💨 Fast-Paced (Packed!)"]
-        pace = st.select_slider("🏃 Travel Pace:", options=pace_options, value="🏃‍♀️ Moderate (3-4 things/day)")
+        pace = st.radio("🏃 Travel Pace", ["🐢 Very Slow","🚶 Relaxed","🏃 Moderate","💨 Fast"], horizontal=True)
 
-    food_prefs = st.multiselect("🍜 Food Preferences?", ["Vegetarian", "Vegan", "Pescatarian", "Gluten-Free", " local cuisine MUST!",
-                                                        " street food addict", " fine dining lover", " must try desserts",
-                                                        " café hopping culture", " avoid spicy food"],
-                                                        placeholder="Any dietary needs or food focus?")
-    transport_prefs_local = st.selectbox("🛵 Preferred Local Transport?", ["Scooter/Bike Rental", "Car Rental (Self-Drive)",
-                                                                         "Taxis/Ride-Sharing (Uber/Grab etc)", "Auto Rickshaws/Tuk-Tuks", "Public Transport (Bus/Metro/Train)", "Walking Focus"])
-    special_requests = st.text_area("📝 Any Special Requests / Must-See Places?", placeholder="e.g., 'Must visit the Eiffel Tower at night!', 'Need info on accessible temples', 'Focus on surfing beaches only'")
+    food_prefs = st.multiselect(
+        "🍜 Food Preferences?",
+        ["Vegetarian","Vegan","Pescatarian","Gluten-Free","local cuisine MUST!","street food addict",
+         "fine dining lover","must try desserts","café hopping culture","avoid spicy food"]
+    )
+    transport_prefs_local = st.selectbox(
+        "🛵 Preferred Local Transport?",
+        ["Scooter/Bike Rental","Car Rental (Self-Drive)","Taxis/Ride-Sharing (Uber/Grab etc)","Auto Rickshaws/Tuk-Tuks",
+         "Public Transport (Bus/Metro/Train)","Walking Focus"]
+    )
+
+    with st.popover("Advanced filters"):
+        min_rating = st.slider("Minimum hotel rating", 3.0, 5.0, 4.2, 0.1)
+        must_have = st.multiselect("Must-have amenities", ["Wi-Fi","Breakfast","Pool","Kitchen","Gym"])
+
+    special_requests = st.text_area("📝 Any Special Requests / Must-See Places?",
+                                    placeholder="e.g., 'Eiffel Tower at night', 'Accessible temples', 'Surfing only'")
 
     submitted = st.form_submit_button("🚀 Generate My Epic Trip Plan!")
 
-# --- Generate and Display Itinerary ---
+# ======================
+# PROMPT (funny + lingo + month packing)
+# ======================
+def build_prompt(destination, duration, people, budget_dest_currency, dest_currency_code, travel_vibe, accommodation, pace,
+                 origin_country, origin_city, transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests):
+    accomm_str = ", ".join(accommodation) if accommodation else "Any suitable"
+    vibe_str   = ", ".join(travel_vibe) if travel_vibe else "General Tourist"
+    food_str   = ", ".join(food_prefs) if food_prefs else "No specific preferences"
+    prompt = (
+        f"You are NomadSquad, an adventurous, witty, emoji-loving travel planner. Lean funny and friendly.\n"
+        f"Add plenty of destination lingo and local slang with brief meanings (5–10 phrases sprinkled naturally).\n"
+        f"Include playful jokes and hype, but stay practical and accurate.\n"
+        f"--- TRIP INPUTS ---\n"
+        f"Origin: {origin_city}, {origin_country}\n"
+        f"Destination: {destination}\n"
+        f"Month: {travel_month}\n"
+        f"Duration: {duration} days\n"
+        f"People: {people}\n"
+        f"Daily Budget (per person): {budget_dest_currency:.0f} {dest_currency_code}\n"
+        f"Arrival: {transport_to_dest}\n"
+        f"Stay: {accomm_str}\n"
+        f"Vibe: {vibe_str}\n"
+        f"Pace: {pace}\n"
+        f"Food: {food_str}\n"
+        f"Local Transport Pref: {transport_prefs_local}\n"
+        f"Requests: {special_requests or 'None'}\n"
+        f"--- RULES ---\n"
+        f"1) In the OVERVIEW, give seasonal/weather context for {destination} in {travel_month} (°C), "
+        f"and a concise PACKING LIST tailored to the season (e.g., rain gear in monsoon, layers in winter, sunscreen in summer).\n"
+        f"2) DAILY ITINERARY: Write a vivid day-by-day plan (**Day 1**, **Day 2**, ...). Blend vibes & requests; be descriptive and fun.\n"
+        f"3) TIPS: Include arrival & local transport guidance, safety, budget hacks, and a 'Local Lingo' mini-glossary "
+        f"(5–10 short entries: phrase = meaning + when to use).\n"
+        f"4) FOOD: Suggest specific eateries/dishes respecting preferences; add price hints in {dest_currency_code}.\n"
+        f"5) ACCOMMODATION: Suggest 1–2 options that match style & budget with brief WHY they fit.\n"
+        f"6) Keep it structured EXACTLY in these headings:\n"
+        f"### 🎉 Your NomadSquad Trip Overview & Seasonal Intel! 🎉\n"
+        f"### 🗺️ Your Awesome {duration}-Day Adventure Itinerary! 🗺️\n"
+        f"### ✨ NomadSquad's Pro Tips & Essential Info! ✨\n"
+        f"End each section with one fun one-liner in local flavor."
+    )
+    return prompt
+
+# ======================
+# GENERATE (writes to session_state)
+# ======================
 if submitted:
     if not destination:
-         st.error("🚨 Please enter a destination to get started!")
+        st.error("🚨 Please enter a destination.")
     else:
-        # Use the values from session state for budget/currency
         budget_for_ai = st.session_state.home_budget * st.session_state.exchange_rate
         dest_currency_for_ai = st.session_state.dest_currency
 
-        with st.spinner("✨ NomadSquad is charting your adventure map... this is the exciting part! ✨"):
-            ai_response = get_ai_response(
-                GEMINI_API_KEY, destination, duration, num_people, budget_for_ai, dest_currency_for_ai,
-                travel_vibe, accommodation, pace, origin_country, origin_city, transport_to_dest, travel_month,
-                food_prefs, transport_prefs_local, special_requests
+        with st.spinner("✨ NomadSquad is charting your adventure..."):
+            prompt = build_prompt(
+                destination, duration, num_people, budget_for_ai, dest_currency_for_ai,
+                travel_vibe, accommodation, pace, origin_country, origin_city,
+                transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests
             )
-            st.markdown("---")
-            st.subheader("🎉 Your Awesome Personalized Travel Plan is Ready! 🎉")
+            gem_text, gem_err = make_gemini_itinerary(GEMINI_API_KEY, prompt)
+            if gem_err:
+                st.error(f"Gemini Error: {gem_err}")
+            else:
+                # Perplexity research (optional, shows links)
+                research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
+                                 f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
+                _, links = pplx_research(research_query, model="sonar-pro")
 
-            try:
-                if ai_response.startswith("An error occurred") or ai_response.startswith("⚠️") or ai_response.startswith("🚨"):
-                     st.error(ai_response)
-                else:
-                    parts = ai_response.split("###")
-                    if len(parts) >= 3: # Check for at least 3 main sections
-                        # Find parts by header text to make parsing robust
-                        overview_text = ""
-                        itinerary_text = ""
-                        details_text = ""
-                        
-                        # A more robust way to find the text for each section
-                        temp_response = ai_response
-                        if "### 🎉 Your NomadSquad Trip Overview" in temp_response:
-                            splits = temp_response.split("### 🗺️ Your Awesome", 1)
-                            overview_text = splits[0].split("### 🎉 Your NomadSquad Trip Overview", 1)[-1]
-                            temp_response = splits[1] if len(splits) > 1 else ""
+                # ---- PERSIST ----
+                st.session_state.final_output = gem_text
+                st.session_state.links_output = links
 
-                        if "### ✨ NomadSquad's Pro Tips" in temp_response:
-                            splits = temp_response.split("### ✨ NomadSquad's Pro Tips", 1)
-                            itinerary_text = splits[0]
-                            details_text = splits[1] if len(splits) > 1 else ""
-                        else: # Fallback if tips header is missing
-                            itinerary_text = temp_response
+                st.success("Trip generated! Scroll down to view.")
 
-                        if overview_text and itinerary_text and details_text:
-                            tab1, tab2, tab3 = st.tabs(["Overview & Prep", "Daily Adventure", "Essential Tips"])
-                            with tab1: st.markdown(overview_text, unsafe_allow_html=True)
-                            with tab2: st.markdown(itinerary_text, unsafe_allow_html=True)
-                            with tab3: st.markdown(details_text, unsafe_allow_html=True)
-                        else:
-                            st.warning("Hmm, NomadSquad got a bit too excited and didn't format the plan perfectly for tabs. Here's the full adventure plan:")
-                            st.markdown(ai_response)
-                    else:
-                         st.warning("Hmm, NomadSquad's response wasn't structured for tabs. Here's the full adventure plan:")
-                         st.markdown(ai_response)
+# ======================
+# RENDER FROM SESSION (persists across reruns)
+# ======================
+if st.session_state.final_output:
+    st.markdown("---")
+    st.subheader("🎉 Your Awesome Personalized Travel Plan is Ready! 🎉")
 
-            except Exception as e:
-                st.warning("An error occurred while displaying the response in tabs. Showing the full response:")
-                st.error(f"Display Error: {type(e).__name__} - {e}")
-                st.markdown(ai_response)
+    # Tabs: Overview / Itinerary / Tips / Links
+    tab_titles = ["Overview & Prep","Daily Adventure","Essential Tips","🔗 Book & Reviews"]
+    t1, t2, t3, t4 = st.tabs(tab_titles)
+
+    raw = st.session_state.final_output
+    links = st.session_state.links_output or []
+
+    # split by headers
+    overview, itinerary, tips = "", "", ""
+    if "### 🎉 Your NomadSquad Trip Overview" in raw and "### 🗺️" in raw:
+        overview = raw.split("### 🗺️",1)[0].split("### 🎉",1)[-1]
+        rest = "### 🗺️" + raw.split("### 🗺️",1)[1]
+        if "### ✨" in rest:
+            itinerary = rest.split("### ✨",1)[0]
+            tips = "### ✨" + rest.split("### ✨",1)[1]
+        else:
+            itinerary = rest
+
+    with t1: st.markdown(overview or raw, unsafe_allow_html=True)
+    with t2: st.markdown(itinerary or raw, unsafe_allow_html=True)
+    with t3: st.markdown(tips or raw, unsafe_allow_html=True)
+    with t4:
+        if links:
+            for it in links:
+                st.markdown(f"- [{it['title']}]({it['url']})  _{it.get('date','')}_")
+        else:
+            st.info("No external links were added. Try again later or adjust filters.")
+
+    # Quick actions
+    st.markdown("### Actions")
+    st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(destination or ""))
+    pdf_bytes = build_pdf_bytes(raw, title=f"NomadSquad — {destination or 'Trip'}")
+    st.download_button(
+        "⬇️ Download Itinerary (PDF)",
+        data=pdf_bytes,
+        file_name=f"NomadSquad_{(destination or 'Trip').replace(',','').replace(' ','_')}.pdf",
+        mime="application/pdf"
+    )
+
+    # Reset button for a fresh run
+    if st.sidebar.button("🔄 Reset Trip"):
+        st.session_state.final_output = None
+        st.session_state.links_output = []
+        st.experimental_rerun()
+
+    # OPTIONAL: If you want to stop execution after rendering to avoid extra reruns:
+    st.stop()
