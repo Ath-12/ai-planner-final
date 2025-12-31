@@ -155,18 +155,51 @@ def pplx_research(query:str, model:str="sonar-pro", k:int=8):
         st.info(f"Perplexity research unavailable ({e})."); return "", []
 
 def make_gemini_itinerary(api_key, prompt):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('models/gemini-pro-latest')
-    cfg = {"max_output_tokens": 8192, "temperature": 0.9}
-    resp = model.generate_content(prompt, generation_config=cfg)
-    if not getattr(resp, "parts", None): return None, "Blocked or empty response."
-    text = resp.text
     try:
-        if resp.candidates and resp.candidates[0].finish_reason and resp.candidates[0].finish_reason.name not in ["STOP","FINISH_REASON_UNSPECIFIED"]:
-            text += "\n\n⚠️ Response may be truncated."
-    except Exception:
-        pass
-    return text, None
+        genai.configure(api_key=api_key)
+
+        # ✅ UPDATED: Using your available Gemini 3 Flash model
+        # This is the best balance of speed and intelligence for your app right now.
+        model_name = "models/gemini-3-flash-preview"
+        model = genai.GenerativeModel(model_name)
+
+        cfg = {
+            "max_output_tokens": 4096,  # Increased for detailed itineraries
+            "temperature": 0.7,
+            "top_p": 0.9
+        }
+
+        # Safety settings to prevent blocking of travel content
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        ]
+
+        resp = model.generate_content(
+            prompt, 
+            generation_config=cfg,
+            safety_settings=safety_settings
+        )
+
+        if not resp or not getattr(resp, "text", None):
+            return None, "Empty response from Gemini."
+
+        return resp.text.strip(), None
+
+    except Exception as e:
+        # Debug block kept in case you ever need to check models again
+        try:
+            print(f"❌ Error with model '{model_name}': {e}")
+            print("🔍 Listing available models for your key...")
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    print(f"   - {m.name}")
+        except:
+            pass
+        return None, f"Gemini request failed: {e}"
+    
 
 # ---------- PDF generation using Pillow (no extra libs)
 def wrap_text_to_width(draw, text, font, max_width):
