@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+streamlit>=1.60  # the test runner (AppTest) needs a recent Streamlit
