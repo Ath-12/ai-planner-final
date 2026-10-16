@@ -5,6 +5,7 @@ import requests, datetime, re, time
 from concurrent.futures import ThreadPoolExecutor
 import urllib.parse as up
 from pdf_export import build_pdf_bytes
+from calendar_export import build_ics, next_start_date, split_days
 
 # ======================
 # Styling (your CSS kept)
@@ -463,6 +464,7 @@ if submitted:
                 st.session_state.links_problem = links_problem
                 st.session_state.plan_destination = destination
                 st.session_state.plan_stays = accommodation
+                st.session_state.plan_month = travel_month
                 st.session_state.plan_total = (f"{budget_for_ai * num_people * duration:,.0f} {dest_currency_for_ai} "
                                                f"for {num_people} {'person' if num_people == 1 else 'people'} × {duration} days")
                 st.session_state.plans_generated += 1
@@ -510,14 +512,34 @@ if st.session_state.final_output:
 
     # Quick actions
     st.markdown("### Actions")
-    st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(plan_dest))
-    pdf_bytes = cached_pdf(raw, f"NomadSquad — {plan_dest}")
-    st.download_button(
-        "⬇️ Download Itinerary (PDF)",
-        data=pdf_bytes,
-        file_name=f"NomadSquad_{re.sub(r'[^A-Za-z0-9]+', '_', plan_dest).strip('_')}.pdf",
-        mime="application/pdf"
-    )
+    safe_name = re.sub(r"[^A-Za-z0-9]+", "_", plan_dest).strip("_") or "Trip"
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.link_button("🗺️ Open in Google Maps", maps_search_url(plan_dest), width="stretch")
+    with a2:
+        st.download_button("⬇️ Download PDF", data=cached_pdf(raw, f"NomadSquad — {plan_dest}"),
+                           file_name=f"NomadSquad_{safe_name}.pdf", mime="application/pdf",
+                           width="stretch")
+    with a3:
+        st.download_button("📝 Download Markdown", data=raw.encode("utf-8"),
+                           file_name=f"NomadSquad_{safe_name}.md", mime="text/markdown",
+                           width="stretch")
+
+    # Add the trip to a calendar: one all-day event per itinerary day
+    with st.container(border=True):
+        st.markdown("**📅 Add this trip to your calendar**")
+        c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+        with c1:
+            start = st.date_input("Trip starts on",
+                                  value=next_start_date(st.session_state.get("plan_month", "January")),
+                                  key="trip_start")
+        days_found = len(split_days(itinerary or raw))
+        with c2:
+            st.download_button("📅 Download .ics", data=build_ics(itinerary or raw, start, plan_dest),
+                               file_name=f"NomadSquad_{safe_name}.ics", mime="text/calendar",
+                               width="stretch")
+        st.caption(f"{days_found or 1} event{'s' if days_found != 1 else ''} · opens in Google Calendar, "
+                   "Apple Calendar or Outlook")
 
     # Reset button for a fresh run
     if st.sidebar.button("🔄 Reset Trip"):
