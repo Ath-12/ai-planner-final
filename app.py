@@ -1,7 +1,8 @@
 import streamlit as st
 from google import genai
 from google.genai import types
-import requests, datetime
+import requests, datetime, re
+from concurrent.futures import ThreadPoolExecutor
 import urllib.parse as up
 from pdf_export import build_pdf_bytes
 
@@ -128,32 +129,65 @@ def get_exchange_rate(home_currency="INR", dest_currency="USD"):
 def maps_search_url(query: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={up.quote(query)}"
 
-def pplx_research(query:str, model:str="sonar-pro", k:int=8):
-    if not PPLX_API_KEY: return "", []
-    url = "https://api.perplexity.ai/chat/completions"
-    headers = {"Authorization": f"Bearer {PPLX_API_KEY}", "Content-Type":"application/json"}
+def _links_from_perplexity(js: dict, k: int) -> list:
+    """Perplexity has returned sources in different fields over time:
+    `search_results` (title + url + date), older `citations` (plain URLs),
+    and Markdown links inside the answer text. Read all of them."""
+    links, seen = [], set()
+    def add(url, title="", date=""):
+        if url and url.startswith("http") and url not in seen:
+            seen.add(url)
+            links.append({"title": title or up.urlparse(url).netloc.removeprefix("www."), "url": url, "date": date or ""})
+    for it in js.get("search_results") or []:
+        add(it.get("url"), it.get("title"), it.get("date"))
+    for url in js.get("citations") or []:
+        add(url if isinstance(url, str) else url.get("url"))
+    try:
+        text = js["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        text = ""
+    for title, url in re.findall(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", text):
+        add(url, title)
+    return links[:k]
+
+def pplx_research(query: str, model: str = "sonar-pro", k: int = 8):
+    """Return (links, problem). `problem` explains why there are no links, so the
+    app can say so instead of silently showing an empty tab."""
+    if not PPLX_API_KEY:
+        return [], "Perplexity key (PPLX_API_KEY) is not set in the app's secrets."
     payload = {
-        "model": model,  # "sonar-pro" (fast) or "sonar-deep-research" (deeper)
+        "model": model,
         "messages": [
-            {"role":"system","content":"Be precise, add trustworthy links (official or major OTAs), concise bullets."},
-            {"role":"user","content": f"Find high-quality booking pages and review links: {query}. Prefer official hotel sites or major OTAs. 6–8 best links."}
+            {"role": "system", "content": "Be precise, add trustworthy links (official or major OTAs), concise bullets."},
+            {"role": "user", "content": f"Find high-quality booking pages and review links: {query}. Prefer official hotel sites or major OTAs. 6–8 best links."},
         ],
         "temperature": 0.2,
-        "top_p": 0.9,
-        "max_tokens": 1200
+        "max_tokens": 1200,
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
-        r.raise_for_status()
-        js = r.json()
-        text = js["choices"][0]["message"]["content"]
-        results = js.get("search_results", []) or []
-        links = []
-        for it in results[:k]:
-            links.append({"title": it.get("title","Link"), "url": it.get("url","#"), "date": it.get("date","")})
-        return text, links
+        r = requests.post("https://api.perplexity.ai/chat/completions",
+                          headers={"Authorization": f"Bearer {PPLX_API_KEY}"}, json=payload, timeout=45)
+        if r.status_code != 200:
+            return [], f"Perplexity returned HTTP {r.status_code}: {r.text[:200]}"
+        links = _links_from_perplexity(r.json(), k)
+        return links, (None if links else "Perplexity answered but returned no links.")
     except Exception as e:
-        st.info(f"Perplexity research unavailable ({e})."); return "", []
+        return [], f"Perplexity request failed: {e}"
+
+def quick_search_links(destination: str, stay_types: list) -> list:
+    """Direct search pages built locally (no API, always available)."""
+    q = up.quote_plus(destination)
+    stays = " ".join(stay_types).lower()
+    links = [
+        ("Booking.com — hotels & stays", f"https://www.booking.com/searchresults.html?ss={q}"),
+        ("Google Hotels — compare prices", f"https://www.google.com/travel/search?q={up.quote_plus('hotels in ' + destination)}"),
+        ("Tripadvisor — reviews", f"https://www.tripadvisor.com/Search?q={q}"),
+    ]
+    if "airbnb" in stays or "apartment" in stays or "unique" in stays or not stay_types:
+        links.insert(1, ("Airbnb — homes & unique stays", f"https://www.airbnb.com/s/{up.quote(destination)}/homes"))
+    if "hostel" in stays:
+        links.append(("Hostelworld — hostels", f"https://www.hostelworld.com/search?search_keywords={q}"))
+    return [{"title": t, "url": u} for t, u in links]
 
 # Google retires "preview" model names from time to time (that caused the
 # 404 fixed in Jan 2026). The model can now be changed from Streamlit secrets
@@ -178,10 +212,9 @@ GEMINI_CONFIG = types.GenerateContentConfig(
 def gemini_client(api_key: str):
     return genai.Client(api_key=api_key)
 
-def make_gemini_itinerary(api_key, prompt):
+def make_gemini_itinerary(client, prompt):
     """Return (plan_text, error_message). Tries the configured model first,
     then the fallbacks, so one retired model name doesn't take the app down."""
-    client = gemini_client(api_key)
     errors = []
     for model in dict.fromkeys([GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]):
         try:
@@ -354,18 +387,26 @@ if submitted:
                 travel_vibe, accommodation, pace, origin_country, origin_city,
                 transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests
             )
-            gem_text, gem_err = make_gemini_itinerary(GEMINI_API_KEY, prompt)
+            research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
+                             f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
+            # Both calls are slow network requests, so they run side by side.
+            client = gemini_client(GEMINI_API_KEY)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                gem_future = pool.submit(make_gemini_itinerary, client, prompt)
+                pplx_future = pool.submit(pplx_research, research_query, "sonar-pro")
+                gem_text, gem_err = gem_future.result()
+                links, links_problem = pplx_future.result()
+            if links_problem:
+                print(f"Booking links: {links_problem}")   # visible in Streamlit Cloud logs
             if gem_err:
                 st.error(f"Gemini Error: {gem_err}")
             else:
-                # Perplexity research (optional, shows links)
-                research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
-                                 f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
-                _, links = pplx_research(research_query, model="sonar-pro")
-
                 # ---- PERSIST ----
                 st.session_state.final_output = gem_text
                 st.session_state.links_output = links
+                st.session_state.links_problem = links_problem
+                st.session_state.plan_destination = destination
+                st.session_state.plan_stays = accommodation
 
                 st.success("Trip generated! Scroll down to view.")
 
@@ -382,6 +423,7 @@ if st.session_state.final_output:
 
     raw = st.session_state.final_output
     links = st.session_state.links_output or []
+    plan_dest = st.session_state.get("plan_destination") or destination or "Trip"
 
     # split by headers
     overview, itinerary, tips = "", "", ""
@@ -399,19 +441,26 @@ if st.session_state.final_output:
     with t3: st.markdown(tips or raw, unsafe_allow_html=True)
     with t4:
         if links:
+            st.markdown("**🔎 Picked by Perplexity from a live web search**")
             for it in links:
-                st.markdown(f"- [{it['title']}]({it['url']})  _{it.get('date','')}_")
+                date = f"  _{it['date']}_" if it.get("date") else ""
+                st.markdown(f"- [{it['title']}]({it['url']}){date}")
         else:
-            st.info("No external links were added. Try again later or adjust filters.")
+            st.info("No AI-picked links this time"
+                    + (f": {st.session_state.get('links_problem')}" if st.session_state.get("links_problem") else ".")
+                    + " The direct searches below always work.")
+        st.markdown("**🧭 Search directly**")
+        for it in quick_search_links(plan_dest, st.session_state.get("plan_stays") or []):
+            st.markdown(f"- [{it['title']}]({it['url']})")
 
     # Quick actions
     st.markdown("### Actions")
-    st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(destination or ""))
-    pdf_bytes = cached_pdf(raw, f"NomadSquad — {destination or 'Trip'}")
+    st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(plan_dest))
+    pdf_bytes = cached_pdf(raw, f"NomadSquad — {plan_dest}")
     st.download_button(
         "⬇️ Download Itinerary (PDF)",
         data=pdf_bytes,
-        file_name=f"NomadSquad_{(destination or 'Trip').replace(',','').replace(' ','_')}.pdf",
+        file_name=f"NomadSquad_{re.sub(r'[^A-Za-z0-9]+', '_', plan_dest).strip('_')}.pdf",
         mime="application/pdf"
     )
 
