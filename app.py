@@ -531,8 +531,7 @@ if st.session_state.final_output:
         c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
         with c1:
             start = st.date_input("Trip starts on",
-                                  value=next_start_date(st.session_state.get("plan_month", "January")),
-                                  key="trip_start")
+                                  value=next_start_date(st.session_state.get("plan_month", "January")))
         days_found = len(split_days(itinerary or raw))
         with c2:
             st.download_button("📅 Download .ics", data=build_ics(itinerary or raw, start, plan_dest),
