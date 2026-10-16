@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import requests, datetime
 import urllib.parse as up
 from pdf_export import build_pdf_bytes
@@ -154,52 +155,51 @@ def pplx_research(query:str, model:str="sonar-pro", k:int=8):
     except Exception as e:
         st.info(f"Perplexity research unavailable ({e})."); return "", []
 
+# Google retires "preview" model names from time to time (that caused the
+# 404 fixed in Jan 2026). The model can now be changed from Streamlit secrets
+# without a code change, and a couple of stable fallbacks are tried in order.
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
+
+GEMINI_CONFIG = types.GenerateContentConfig(
+    temperature=0.7,
+    top_p=0.9,
+    # Newer Gemini models "think" before answering and those tokens count
+    # towards this limit, so it is set high enough for a full multi-day plan.
+    max_output_tokens=8192,
+    safety_settings=[
+        types.SafetySetting(category=c, threshold="BLOCK_MEDIUM_AND_ABOVE")
+        for c in ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+                  "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")
+    ],
+)
+
+@st.cache_resource
+def gemini_client(api_key: str):
+    return genai.Client(api_key=api_key)
+
 def make_gemini_itinerary(api_key, prompt):
-    try:
-        genai.configure(api_key=api_key)
-
-        # ✅ UPDATED: Using your available Gemini 3 Flash model
-        # This is the best balance of speed and intelligence for your app right now.
-        model_name = "models/gemini-3-flash-preview"
-        model = genai.GenerativeModel(model_name)
-
-        cfg = {
-            "max_output_tokens": 4096,  # Increased for detailed itineraries
-            "temperature": 0.7,
-            "top_p": 0.9
-        }
-
-        # Safety settings to prevent blocking of travel content
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        ]
-
-        resp = model.generate_content(
-            prompt, 
-            generation_config=cfg,
-            safety_settings=safety_settings
-        )
-
-        if not resp or not getattr(resp, "text", None):
-            return None, "Empty response from Gemini."
-
-        return resp.text.strip(), None
-
-    except Exception as e:
-        # Debug block kept in case you ever need to check models again
+    """Return (plan_text, error_message). Tries the configured model first,
+    then the fallbacks, so one retired model name doesn't take the app down."""
+    client = gemini_client(api_key)
+    errors = []
+    for model in dict.fromkeys([GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]):
         try:
-            print(f"❌ Error with model '{model_name}': {e}")
-            print("🔍 Listing available models for your key...")
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    print(f"   - {m.name}")
-        except:
-            pass
-        return None, f"Gemini request failed: {e}"
-    
+            resp = client.models.generate_content(model=model, contents=prompt, config=GEMINI_CONFIG)
+        except Exception as e:
+            errors.append(f"{model}: {e}")
+            print(f"Gemini model '{model}' failed: {e}")   # visible in Streamlit Cloud logs
+            continue
+        text = (resp.text or "").strip()
+        if not text:
+            errors.append(f"{model}: empty response (possibly blocked by safety filters)")
+            continue
+        finish = getattr(resp.candidates[0], "finish_reason", None) if resp.candidates else None
+        if str(finish).endswith("MAX_TOKENS"):
+            text += "\n\n_(NomadSquad ran out of space here. Try fewer days for the full detail.)_"
+        return text, None
+    return None, "Gemini request failed. " + " | ".join(errors)
+
 
 @st.cache_data(show_spinner=False)
 def cached_pdf(markdown_text: str, title: str) -> bytes:
