@@ -1,8 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
-import os, requests, datetime, io
-from PIL import Image, ImageDraw, ImageFont
+import requests, datetime
 import urllib.parse as up
+from pdf_export import build_pdf_bytes
 
 # ======================
 # Styling (your CSS kept)
@@ -201,72 +201,10 @@ def make_gemini_itinerary(api_key, prompt):
         return None, f"Gemini request failed: {e}"
     
 
-# ---------- PDF generation using Pillow (no extra libs)
-def wrap_text_to_width(draw, text, font, max_width):
-    lines = []
-    for paragraph in text.split("\n"):
-        if not paragraph:
-            lines.append("")
-            continue
-        words = paragraph.split(" ")
-        line = ""
-        for w in words:
-            test = (line + " " + w).strip()
-            if draw.textlength(test, font=font) <= max_width:
-                line = test
-            else:
-                if line: lines.append(line)
-                line = w
-        if line: lines.append(line)
-    return lines
-
-def markdown_to_plain(md: str) -> str:
-    # quick-and-simple: strip ** and headings for readable PDF
-    lines = []
-    for raw in md.splitlines():
-        s = raw.replace("**","").replace("__","")
-        s = s.replace("###","").replace("##","").replace("#","").lstrip()
-        lines.append(s)
-    return "\n".join(lines)
-
-def build_pdf_bytes(markdown_text: str, title: str="NomadSquad Itinerary"):
-    W, H = 1240, 1754          # roughly A4 at ~150 DPI
-    M = 80
-    font_title = ImageFont.load_default()
-    font_body = ImageFont.load_default()
-
-    pages = []
-    text = f"{title}\n\n" + markdown_to_plain(markdown_text)
-
-    temp = Image.new("RGB", (W, H), "white")
-    draw_temp = ImageDraw.Draw(temp)
-
-    y = M
-    page = Image.new("RGB", (W, H), "white")
-    draw = ImageDraw.Draw(page)
-
-    # Title
-    for t in wrap_text_to_width(draw, title, font_title, W - 2*M):
-        draw.text((M, y), t, font=font_title, fill="black")
-        y += 28
-    y += 10
-
-    # Body
-    for line in wrap_text_to_width(draw_temp, text, font_body, W - 2*M):
-        if y > H - M:  # new page
-            pages.append(page)
-            page = Image.new("RGB", (W, H), "white")
-            draw = ImageDraw.Draw(page)
-            y = M
-        draw.text((M, y), line, font=font_body, fill="black")
-        y += 22
-
-    pages.append(page)
-
-    bio = io.BytesIO()
-    pages[0].save(bio, format="PDF", save_all=True, append_images=pages[1:])
-    bio.seek(0)
-    return bio
+@st.cache_data(show_spinner=False)
+def cached_pdf(markdown_text: str, title: str) -> bytes:
+    """Build the PDF once per plan instead of on every rerun."""
+    return build_pdf_bytes(markdown_text, title)
 
 # ======================
 # UI: Title
@@ -469,7 +407,7 @@ if st.session_state.final_output:
     # Quick actions
     st.markdown("### Actions")
     st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(destination or ""))
-    pdf_bytes = build_pdf_bytes(raw, title=f"NomadSquad — {destination or 'Trip'}")
+    pdf_bytes = cached_pdf(raw, f"NomadSquad — {destination or 'Trip'}")
     st.download_button(
         "⬇️ Download Itinerary (PDF)",
         data=pdf_bytes,
