@@ -1,8 +1,11 @@
 import streamlit as st
-import google.generativeai as genai
-import os, requests, datetime, io
-from PIL import Image, ImageDraw, ImageFont
+from google import genai
+from google.genai import types
+import requests, datetime, re, time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.parse as up
+from pdf_export import build_pdf_bytes
+from calendar_export import build_ics, next_start_date, split_days
 
 # ======================
 # Styling (your CSS kept)
@@ -110,163 +113,163 @@ if "links_output" not in st.session_state: st.session_state.links_output = []
 # ======================
 # HELPERS
 # ======================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_exchange_rate(home_currency="INR", dest_currency="USD"):
-    if not EXCHANGE_RATE_API_KEY or home_currency == dest_currency:
-        return 1.0, dest_currency
+    """Return (rate, problem). rate is None when no live rate is available, so
+    the app never shows a home-currency amount labelled as another currency."""
+    if home_currency == dest_currency:
+        return 1.0, None
+    if not EXCHANGE_RATE_API_KEY:
+        return None, "currency conversion is off (no EXCHANGE_RATE_API_KEY)"
     url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/pair/{home_currency}/{dest_currency}"
     try:
         r = requests.get(url, timeout=6); r.raise_for_status()
         data = r.json()
-        if data.get("result") == "success": return data.get("conversion_rate", 1.0), dest_currency
-        st.warning("Could not fetch live exchange rate. Using 1.0")
+        if data.get("result") == "success" and data.get("conversion_rate"):
+            return float(data["conversion_rate"]), None
+        return None, f"the exchange-rate service said: {data.get('error-type', 'unknown error')}"
     except Exception:
-        st.warning("Network error fetching exchange rate. Using 1.0")
-    return 1.0, dest_currency
+        return None, "the exchange-rate service could not be reached"
 
 def maps_search_url(query: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={up.quote(query)}"
 
-def pplx_research(query:str, model:str="sonar-pro", k:int=8):
-    if not PPLX_API_KEY: return "", []
-    url = "https://api.perplexity.ai/chat/completions"
-    headers = {"Authorization": f"Bearer {PPLX_API_KEY}", "Content-Type":"application/json"}
+def _links_from_perplexity(js: dict, k: int) -> list:
+    """Perplexity has returned sources in different fields over time:
+    `search_results` (title + url + date), older `citations` (plain URLs),
+    and Markdown links inside the answer text. Read all of them."""
+    links, seen = [], set()
+    def add(url, title="", date=""):
+        if url and url.startswith("http") and url not in seen:
+            seen.add(url)
+            links.append({"title": title or up.urlparse(url).netloc.removeprefix("www."), "url": url, "date": date or ""})
+    for it in js.get("search_results") or []:
+        add(it.get("url"), it.get("title"), it.get("date"))
+    for url in js.get("citations") or []:
+        add(url if isinstance(url, str) else url.get("url"))
+    try:
+        text = js["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        text = ""
+    for title, url in re.findall(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", text):
+        add(url, title)
+    return links[:k]
+
+def pplx_research(query: str, model: str = "sonar-pro", k: int = 8):
+    """Return (links, problem). `problem` explains why there are no links, so the
+    app can say so instead of silently showing an empty tab."""
+    if not PPLX_API_KEY:
+        return [], "Perplexity key (PPLX_API_KEY) is not set in the app's secrets."
     payload = {
-        "model": model,  # "sonar-pro" (fast) or "sonar-deep-research" (deeper)
+        "model": model,
         "messages": [
-            {"role":"system","content":"Be precise, add trustworthy links (official or major OTAs), concise bullets."},
-            {"role":"user","content": f"Find high-quality booking pages and review links: {query}. Prefer official hotel sites or major OTAs. 6–8 best links."}
+            {"role": "system", "content": "Be precise, add trustworthy links (official or major OTAs), concise bullets."},
+            {"role": "user", "content": f"Find high-quality booking pages and review links: {query}. Prefer official hotel sites or major OTAs. 6–8 best links."},
         ],
         "temperature": 0.2,
-        "top_p": 0.9,
-        "max_tokens": 1200
+        "max_tokens": 1200,
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
-        r.raise_for_status()
-        js = r.json()
-        text = js["choices"][0]["message"]["content"]
-        results = js.get("search_results", []) or []
-        links = []
-        for it in results[:k]:
-            links.append({"title": it.get("title","Link"), "url": it.get("url","#"), "date": it.get("date","")})
-        return text, links
+        r = requests.post("https://api.perplexity.ai/chat/completions",
+                          headers={"Authorization": f"Bearer {PPLX_API_KEY}"}, json=payload, timeout=45)
+        if r.status_code != 200:
+            return [], f"Perplexity returned HTTP {r.status_code}: {r.text[:200]}"
+        links = _links_from_perplexity(r.json(), k)
+        return links, (None if links else "Perplexity answered but returned no links.")
     except Exception as e:
-        st.info(f"Perplexity research unavailable ({e})."); return "", []
+        return [], f"Perplexity request failed: {e}"
 
-def make_gemini_itinerary(api_key, prompt):
-    try:
-        genai.configure(api_key=api_key)
+def quick_search_links(destination: str, stay_types: list) -> list:
+    """Direct search pages built locally (no API, always available)."""
+    q = up.quote_plus(destination)
+    stays = " ".join(stay_types).lower()
+    links = [
+        ("Booking.com — hotels & stays", f"https://www.booking.com/searchresults.html?ss={q}"),
+        ("Google Hotels — compare prices", f"https://www.google.com/travel/search?q={up.quote_plus('hotels in ' + destination)}"),
+        ("Tripadvisor — reviews", f"https://www.tripadvisor.com/Search?q={q}"),
+    ]
+    if "airbnb" in stays or "apartment" in stays or "unique" in stays or not stay_types:
+        links.insert(1, ("Airbnb — homes & unique stays", f"https://www.airbnb.com/s/{up.quote(destination)}/homes"))
+    if "hostel" in stays:
+        links.append(("Hostelworld — hostels", f"https://www.hostelworld.com/search?search_keywords={q}"))
+    return [{"title": t, "url": u} for t, u in links]
 
-        # ✅ UPDATED: Using your available Gemini 3 Flash model
-        # This is the best balance of speed and intelligence for your app right now.
-        model_name = "models/gemini-3-flash-preview"
-        model = genai.GenerativeModel(model_name)
+# Google retires "preview" model names from time to time (that caused the
+# 404 fixed in Jan 2026). The model can now be changed from Streamlit secrets
+# without a code change, and a couple of stable fallbacks are tried in order.
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
 
-        cfg = {
-            "max_output_tokens": 4096,  # Increased for detailed itineraries
-            "temperature": 0.7,
-            "top_p": 0.9
-        }
+GEMINI_CONFIG = types.GenerateContentConfig(
+    temperature=0.7,
+    top_p=0.9,
+    # Newer Gemini models "think" before answering and those tokens count
+    # towards this limit, so it is set high enough for a full multi-day plan.
+    max_output_tokens=8192,
+    safety_settings=[
+        types.SafetySetting(category=c, threshold="BLOCK_MEDIUM_AND_ABOVE")
+        for c in ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+                  "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")
+    ],
+)
 
-        # Safety settings to prevent blocking of travel content
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        ]
+@st.cache_resource
+def gemini_client(api_key: str):
+    return genai.Client(api_key=api_key)
 
-        resp = model.generate_content(
-            prompt, 
-            generation_config=cfg,
-            safety_settings=safety_settings
-        )
-
-        if not resp or not getattr(resp, "text", None):
-            return None, "Empty response from Gemini."
-
-        return resp.text.strip(), None
-
-    except Exception as e:
-        # Debug block kept in case you ever need to check models again
+def make_gemini_itinerary(client, prompt):
+    """Return (plan_text, error_message). Tries the configured model first,
+    then the fallbacks, so one retired model name doesn't take the app down."""
+    errors = []
+    for model in dict.fromkeys([GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]):
         try:
-            print(f"❌ Error with model '{model_name}': {e}")
-            print("🔍 Listing available models for your key...")
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    print(f"   - {m.name}")
-        except:
-            pass
-        return None, f"Gemini request failed: {e}"
-    
-
-# ---------- PDF generation using Pillow (no extra libs)
-def wrap_text_to_width(draw, text, font, max_width):
-    lines = []
-    for paragraph in text.split("\n"):
-        if not paragraph:
-            lines.append("")
+            resp = client.models.generate_content(model=model, contents=prompt, config=GEMINI_CONFIG)
+        except Exception as e:
+            errors.append(f"{model}: {e}")
+            print(f"Gemini model '{model}' failed: {e}")   # visible in Streamlit Cloud logs
             continue
-        words = paragraph.split(" ")
-        line = ""
-        for w in words:
-            test = (line + " " + w).strip()
-            if draw.textlength(test, font=font) <= max_width:
-                line = test
-            else:
-                if line: lines.append(line)
-                line = w
-        if line: lines.append(line)
-    return lines
+        text = (resp.text or "").strip()
+        if not text:
+            errors.append(f"{model}: empty response (possibly blocked by safety filters)")
+            continue
+        finish = getattr(resp.candidates[0], "finish_reason", None) if resp.candidates else None
+        if str(finish).endswith("MAX_TOKENS"):
+            text += "\n\n_(NomadSquad ran out of space here. Try fewer days for the full detail.)_"
+        return text, None
+    return None, "Gemini request failed. " + " | ".join(errors)
 
-def markdown_to_plain(md: str) -> str:
-    # quick-and-simple: strip ** and headings for readable PDF
-    lines = []
-    for raw in md.splitlines():
-        s = raw.replace("**","").replace("__","")
-        s = s.replace("###","").replace("##","").replace("#","").lstrip()
-        lines.append(s)
-    return "\n".join(lines)
 
-def build_pdf_bytes(markdown_text: str, title: str="NomadSquad Itinerary"):
-    W, H = 1240, 1754          # roughly A4 at ~150 DPI
-    M = 80
-    font_title = ImageFont.load_default()
-    font_body = ImageFont.load_default()
+def split_sections(md: str):
+    """Split the plan into (overview, itinerary, tips).
 
-    pages = []
-    text = f"{title}\n\n" + markdown_to_plain(markdown_text)
+    1) Look for the three main headings by keyword, in order (works even if
+       the AI changes the emoji or wording around them).
+    2) Otherwise split on the highest-level headings, in order.
+    Returns None if neither works, and the app then shows the whole plan."""
+    lines = md.splitlines()
+    heads = [(i, l) for i, l in enumerate(lines) if re.match(r"^#{1,3}\s", l)]
 
-    temp = Image.new("RGB", (W, H), "white")
-    draw_temp = ImageDraw.Draw(temp)
+    def find(words, after):
+        return next((i for i, l in heads if i > after and any(w in l.lower() for w in words)), None)
 
-    y = M
-    page = Image.new("RGB", (W, H), "white")
-    draw = ImageDraw.Draw(page)
+    a = find(["overview"], -1)
+    b = find(["itinerary", "adventure"], a if a is not None else -1)
+    c = find(["tips", "essential"], b if b is not None else -1)
+    if None not in (a, b, c):
+        cuts = [a, b, c, len(lines)]
+    else:
+        top = min((len(l) - len(l.lstrip("#")) for _, l in heads), default=0)
+        starts = [i for i, l in heads if len(l) - len(l.lstrip("#")) == top]
+        if len(starts) < 3:
+            return None
+        cuts = [starts[0], starts[1], starts[2], len(lines)]
+    return tuple("\n".join(lines[cuts[k]:cuts[k + 1]]).strip() for k in range(3))
 
-    # Title
-    for t in wrap_text_to_width(draw, title, font_title, W - 2*M):
-        draw.text((M, y), t, font=font_title, fill="black")
-        y += 28
-    y += 10
 
-    # Body
-    for line in wrap_text_to_width(draw_temp, text, font_body, W - 2*M):
-        if y > H - M:  # new page
-            pages.append(page)
-            page = Image.new("RGB", (W, H), "white")
-            draw = ImageDraw.Draw(page)
-            y = M
-        draw.text((M, y), line, font=font_body, fill="black")
-        y += 22
-
-    pages.append(page)
-
-    bio = io.BytesIO()
-    pages[0].save(bio, format="PDF", save_all=True, append_images=pages[1:])
-    bio.seek(0)
-    return bio
+@st.cache_data(show_spinner=False)
+def cached_pdf(markdown_text: str, title: str) -> bytes:
+    """Build the PDF once per plan instead of on every rerun."""
+    return build_pdf_bytes(markdown_text, title)
 
 # ======================
 # UI: Title
@@ -289,16 +292,23 @@ with col2:
     origin_city = st.text_input("🏙️ Your Origin City", placeholder="Enter Origin City...")
     st.session_state.dest_currency_select = st.selectbox("💲 Destination Currency (for conversion)", currency_codes, index=1, key='dest_currency_selector')
 
-rate, actual_dest_code = get_exchange_rate(st.session_state.home_currency, st.session_state.dest_currency_select)
-st.session_state.exchange_rate = rate
-st.session_state.dest_currency = actual_dest_code
+rate, rate_problem = get_exchange_rate(st.session_state.home_currency, st.session_state.dest_currency_select)
+if rate is None:
+    # No live rate: keep everything in the home currency rather than guess.
+    st.session_state.exchange_rate = 1.0
+    st.session_state.dest_currency = st.session_state.home_currency
+else:
+    st.session_state.exchange_rate = rate
+    st.session_state.dest_currency = st.session_state.dest_currency_select
 
 max_budget_home = 50000 if st.session_state.home_currency != "JPY" else 5000000
 st.session_state.home_budget = st.slider(f"💰 Budget per person/day ({st.session_state.home_currency})", 100, max_budget_home, st.session_state.home_budget, 100)
 
 converted_budget = st.session_state.home_budget * st.session_state.exchange_rate
 st.markdown(f"👉 Approx. **{converted_budget:,.2f} {st.session_state.dest_currency}** per person/day")
-st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(origin_city or "Your city"))
+if rate_problem:
+    st.caption(f"⚠️ No live rate to {st.session_state.dest_currency_select}: {rate_problem}. "
+               f"Your budget stays in {st.session_state.home_currency} and NomadSquad will plan with that.")
 st.markdown("---")
 
 # ======================
@@ -362,7 +372,8 @@ with st.form("planner_form"):
 # PROMPT (funny + lingo + month packing)
 # ======================
 def build_prompt(destination, duration, people, budget_dest_currency, dest_currency_code, travel_vibe, accommodation, pace,
-                 origin_country, origin_city, transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests):
+                 origin_country, origin_city, transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests,
+                 min_rating=None, must_have=None):
     accomm_str = ", ".join(accommodation) if accommodation else "Any suitable"
     vibe_str   = ", ".join(travel_vibe) if travel_vibe else "General Tourist"
     food_str   = ", ".join(food_prefs) if food_prefs else "No specific preferences"
@@ -384,6 +395,9 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
         f"Food: {food_str}\n"
         f"Local Transport Pref: {transport_prefs_local}\n"
         f"Requests: {special_requests or 'None'}\n"
+        f"Stay filters: minimum guest rating {min_rating or 'any'}/5; must-have amenities: {', '.join(must_have or []) or 'none'}\n"
+        f"Total budget for the group: about {budget_dest_currency * people * duration:,.0f} {dest_currency_code} "
+        f"({people} people x {duration} days)\n"
         f"--- RULES ---\n"
         f"1) In the OVERVIEW, give seasonal/weather context for {destination} in {travel_month} (°C), "
         f"and a concise PACKING LIST tailored to the season (e.g., rain gear in monsoon, layers in winter, sunscreen in summer).\n"
@@ -391,7 +405,7 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
         f"3) TIPS: Include arrival & local transport guidance, safety, budget hacks, and a 'Local Lingo' mini-glossary "
         f"(5–10 short entries: phrase = meaning + when to use).\n"
         f"4) FOOD: Suggest specific eateries/dishes respecting preferences; add price hints in {dest_currency_code}.\n"
-        f"5) ACCOMMODATION: Suggest 1–2 options that match style & budget with brief WHY they fit.\n"
+        f"5) ACCOMMODATION: Suggest 1–2 options that match style, budget and the stay filters, with brief WHY they fit.\n"
         f"6) Keep it structured EXACTLY in these headings:\n"
         f"### 🎉 Your NomadSquad Trip Overview & Seasonal Intel! 🎉\n"
         f"### 🗺️ Your Awesome {duration}-Day Adventure Itinerary! 🗺️\n"
@@ -403,9 +417,22 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
 # ======================
 # GENERATE (writes to session_state)
 # ======================
+# Every plan is a paid AI call on a public app, so each visitor gets a short
+# cooldown and a cap per session. (A visitor can reset it by reloading; the
+# hard limit is the quota/budget set on the API key itself.)
+MAX_PLANS_PER_SESSION = 5
+COOLDOWN_SECONDS = 30
+st.session_state.setdefault("plans_generated", 0)
+st.session_state.setdefault("last_generated_at", 0.0)
+
 if submitted:
+    wait = COOLDOWN_SECONDS - (time.time() - st.session_state.last_generated_at)
     if not destination:
         st.error("🚨 Please enter a destination.")
+    elif st.session_state.plans_generated >= MAX_PLANS_PER_SESSION:
+        st.warning(f"🧳 You've planned {MAX_PLANS_PER_SESSION} trips this session. Come back later for more!")
+    elif wait > 0:
+        st.warning(f"⏳ Give NomadSquad {int(wait) + 1} more seconds before the next plan.")
     else:
         budget_for_ai = st.session_state.home_budget * st.session_state.exchange_rate
         dest_currency_for_ai = st.session_state.dest_currency
@@ -414,20 +441,34 @@ if submitted:
             prompt = build_prompt(
                 destination, duration, num_people, budget_for_ai, dest_currency_for_ai,
                 travel_vibe, accommodation, pace, origin_country, origin_city,
-                transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests
+                transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests,
+                min_rating, must_have
             )
-            gem_text, gem_err = make_gemini_itinerary(GEMINI_API_KEY, prompt)
+            research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
+                             f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
+            # Both calls are slow network requests, so they run side by side.
+            client = gemini_client(GEMINI_API_KEY)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                gem_future = pool.submit(make_gemini_itinerary, client, prompt)
+                pplx_future = pool.submit(pplx_research, research_query, "sonar-pro")
+                gem_text, gem_err = gem_future.result()
+                links, links_problem = pplx_future.result()
+            if links_problem:
+                print(f"Booking links: {links_problem}")   # visible in Streamlit Cloud logs
             if gem_err:
                 st.error(f"Gemini Error: {gem_err}")
             else:
-                # Perplexity research (optional, shows links)
-                research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
-                                 f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
-                _, links = pplx_research(research_query, model="sonar-pro")
-
                 # ---- PERSIST ----
                 st.session_state.final_output = gem_text
                 st.session_state.links_output = links
+                st.session_state.links_problem = links_problem
+                st.session_state.plan_destination = destination
+                st.session_state.plan_stays = accommodation
+                st.session_state.plan_month = travel_month
+                st.session_state.plan_total = (f"{budget_for_ai * num_people * duration:,.0f} {dest_currency_for_ai} "
+                                               f"for {num_people} {'person' if num_people == 1 else 'people'} × {duration} days")
+                st.session_state.plans_generated += 1
+                st.session_state.last_generated_at = time.time()
 
                 st.success("Trip generated! Scroll down to view.")
 
@@ -444,44 +485,66 @@ if st.session_state.final_output:
 
     raw = st.session_state.final_output
     links = st.session_state.links_output or []
+    plan_dest = st.session_state.get("plan_destination") or destination or "Trip"
 
-    # split by headers
-    overview, itinerary, tips = "", "", ""
-    if "### 🎉 Your NomadSquad Trip Overview" in raw and "### 🗺️" in raw:
-        overview = raw.split("### 🗺️",1)[0].split("### 🎉",1)[-1]
-        rest = "### 🗺️" + raw.split("### 🗺️",1)[1]
-        if "### ✨" in rest:
-            itinerary = rest.split("### ✨",1)[0]
-            tips = "### ✨" + rest.split("### ✨",1)[1]
-        else:
-            itinerary = rest
+    sections = split_sections(raw)
+    overview, itinerary, tips = sections if sections else ("", "", "")
 
-    with t1: st.markdown(overview or raw, unsafe_allow_html=True)
-    with t2: st.markdown(itinerary or raw, unsafe_allow_html=True)
-    with t3: st.markdown(tips or raw, unsafe_allow_html=True)
+    with t1:
+        if st.session_state.get("plan_total"):
+            st.markdown(f"💰 **Estimated total budget:** {st.session_state.plan_total}")
+        st.markdown(overview or raw)
+    with t2: st.markdown(itinerary or raw)
+    with t3: st.markdown(tips or raw)
     with t4:
         if links:
+            st.markdown("**🔎 Picked by Perplexity from a live web search**")
             for it in links:
-                st.markdown(f"- [{it['title']}]({it['url']})  _{it.get('date','')}_")
+                date = f"  _{it['date']}_" if it.get("date") else ""
+                st.markdown(f"- [{it['title']}]({it['url']}){date}")
         else:
-            st.info("No external links were added. Try again later or adjust filters.")
+            st.info("No AI-picked links this time"
+                    + (f": {st.session_state.get('links_problem')}" if st.session_state.get("links_problem") else ".")
+                    + " The direct searches below always work.")
+        st.markdown("**🧭 Search directly**")
+        for it in quick_search_links(plan_dest, st.session_state.get("plan_stays") or []):
+            st.markdown(f"- [{it['title']}]({it['url']})")
 
     # Quick actions
     st.markdown("### Actions")
-    st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(destination or ""))
-    pdf_bytes = build_pdf_bytes(raw, title=f"NomadSquad — {destination or 'Trip'}")
-    st.download_button(
-        "⬇️ Download Itinerary (PDF)",
-        data=pdf_bytes,
-        file_name=f"NomadSquad_{(destination or 'Trip').replace(',','').replace(' ','_')}.pdf",
-        mime="application/pdf"
-    )
+    safe_name = re.sub(r"[^A-Za-z0-9]+", "_", plan_dest).strip("_") or "Trip"
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.link_button("🗺️ Open in Google Maps", maps_search_url(plan_dest), width="stretch")
+    with a2:
+        st.download_button("⬇️ Download PDF", data=cached_pdf(raw, f"NomadSquad — {plan_dest}"),
+                           file_name=f"NomadSquad_{safe_name}.pdf", mime="application/pdf",
+                           width="stretch")
+    with a3:
+        st.download_button("📝 Download Markdown", data=raw.encode("utf-8"),
+                           file_name=f"NomadSquad_{safe_name}.md", mime="text/markdown",
+                           width="stretch")
+
+    # Add the trip to a calendar: one all-day event per itinerary day
+    with st.container(border=True):
+        st.markdown("**📅 Add this trip to your calendar**")
+        c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+        with c1:
+            start = st.date_input("Trip starts on",
+                                  value=next_start_date(st.session_state.get("plan_month", "January")))
+        days_found = len(split_days(itinerary or raw))
+        with c2:
+            st.download_button("📅 Download .ics", data=build_ics(itinerary or raw, start, plan_dest),
+                               file_name=f"NomadSquad_{safe_name}.ics", mime="text/calendar",
+                               width="stretch")
+        st.caption(f"{days_found or 1} event{'s' if days_found != 1 else ''} · opens in Google Calendar, "
+                   "Apple Calendar or Outlook")
 
     # Reset button for a fresh run
     if st.sidebar.button("🔄 Reset Trip"):
         st.session_state.final_output = None
         st.session_state.links_output = []
-        st.experimental_rerun()
+        st.rerun()
 
     # OPTIONAL: If you want to stop execution after rendering to avoid extra reruns:
     st.stop()

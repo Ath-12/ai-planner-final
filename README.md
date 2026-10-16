@@ -1,131 +1,117 @@
-# ✈️ NomadSquad — Your AI Travel Planner
+# ✈️ NomadSquad — AI Travel Planner
 
-> **Books in one hand, backpack in the other.**  
-> Smart. Funny. Personalized. NomadSquad is your AI-powered travel companion that crafts tailor-made adventures for every traveler.  
+> **Books in one hand, backpack in the other.**
+> Fill in one form, get a complete, personalised trip plan: seasonal prep, a day-by-day itinerary, local tips, booking links, a PDF and a calendar file.
 
-🌍 **Live Demo:** [https://nomadsquad.streamlit.app/](https://nomadsquad.streamlit.app/) 🚀  
+[![tests](https://github.com/Ath-12/ai-planner-final/actions/workflows/tests.yml/badge.svg)](https://github.com/Ath-12/ai-planner-final/actions/workflows/tests.yml)
 
----
-
-## 🧠 Overview
-
-**NomadSquad** is an intelligent travel planner built using **Python** and **Streamlit**, powered by the **Google Gemini API** and **Perplexity AI**.  
-It combines creativity and practicality to generate *detailed*, *fun*, and *vibrant* itineraries that feel like they were written by your best travel buddy — not a bot.  
+🌍 **Live demo:** https://nomadsquad.streamlit.app/
+_Hosted on Streamlit Community Cloud's free tier. If the app has been idle it shows "Wake up this app": click it and give it about a minute._
 
 ---
 
-## ✨ Core Features
+## ✨ What it does
 
-- 🎯 **Deep Customization** – Go beyond destination and duration. Choose your travel vibe, pace, food preferences, local transport style, and accommodation type.  
-- 🤖 **Dynamic AI Persona** – “NomadSquad” responds like a witty, cheerful, travel-savvy friend — full of local slang, humor, and energy.  
-- 💸 **Real-Time Currency Conversion** – Budget in your home currency, with automatic conversion to the destination currency.  
-- ☀️ **Seasonal Intelligence** – The AI gives month-specific advice: weather info, ideal packing lists, and off/peak season tips.  
-- 🗓️ **Structured, Fun Itineraries** – Three clearly formatted sections:  
-  1. **Trip Overview & Seasonal Prep**  
-  2. **Daily Adventure Itinerary**  
-  3. **Essential Tips & Local Lingo**  
-- 🧾 **PDF Export** – Download your complete travel plan as a stylish, ready-to-print PDF — no extra libraries required.  
-- 🔗 **Perplexity Integration** – Fetches real booking and review links for hotels, stays, and activities in seconds.  
-- 🧠 **Session Persistence** – Your generated trip stays on-screen even if Streamlit reloads or you switch tabs.  
-- 🌙 **Dark Mode UI** – A beautifully styled, permanent dark-mode interface with modern animations and rounded elements.  
-- 🔒 **Secure by Design** – All API keys are stored safely in `.streamlit/secrets.toml` (ignored by GitHub).  
+- **One detailed form**: destination, days, group size, travel month, how you're arriving, vibes, stay type, pace, food preferences, local transport, hotel rating and amenities, special requests.
+- **Budget in your own currency**: a daily budget in your home currency, converted live to the destination currency (ExchangeRate-API). If no live rate is available, the budget stays in your currency and the app says so.
+- **AI itinerary (Google Gemini)**: a structured prompt makes the plan come back in three sections, shown as tabs:
+  1. Trip overview & seasonal intel: weather for that month and a packing list
+  2. Day-by-day adventure itinerary
+  3. Pro tips: transport, safety, budget hacks and a "local lingo" mini-glossary
+- **Travel-buddy persona**: witty, emoji-friendly, with local slang explained.
+- **Booking & reviews**: real links picked by Perplexity from a live web search, plus direct searches on Booking.com, Google Hotels, Airbnb, Tripadvisor and Hostelworld that always work.
+- **Estimated total budget** for the whole group and trip.
+- **Exports**: a clean PDF (proper Unicode font, so ₹, accents and dashes print correctly), a Markdown file, and a **calendar file (.ics)** with one event per itinerary day for Google Calendar, Apple Calendar or Outlook.
+- **Fair use**: a 30-second cooldown and 5 plans per visitor session, so the public demo can't burn through the API quota.
 
----
+## 🧠 How it works
 
-## 🛠️ Tech Stack
+```
+Browser ──► app.py (Python + Streamlit, on Streamlit Community Cloud)
+              ├─► ExchangeRate-API     currency rate (cached 1 hour)
+              ├─► Google Gemini        writes the plan          ┐ run at the
+              └─► Perplexity Sonar     finds real booking links ┘ same time
+```
+
+- No database and no login: a plan lives only in the visitor's session.
+- API keys stay on the server (Streamlit secrets) and are never sent to the browser.
+- The Gemini model can be changed with the `GEMINI_MODEL` secret; if it is unavailable, the app tries `gemini-flash-latest` and `gemini-2.5-flash` before showing an error.
+
+## 🛠️ Tech stack
 
 | Layer | Technology |
-|-------|-------------|
-| **Frontend** | Streamlit (Custom CSS for permanent dark mode) |
-| **Backend** | Python |
-| **AI Engine** | Google Gemini Pro API |
-| **Data & Research** | Perplexity Sonar API |
-| **Currency Conversion** | ExchangeRate-API |
-| **PDF Generation** | Pillow (PIL) |
-| **Deployment** | Streamlit Community Cloud + GitHub |
+|---|---|
+| App (UI + server) | Python, Streamlit, custom CSS dark theme |
+| AI itinerary | Google Gemini via the `google-genai` SDK |
+| Booking links | Perplexity Sonar API |
+| Currency | ExchangeRate-API |
+| PDF | fpdf2 + DejaVu Sans font |
+| Calendar | iCalendar (.ics), generated in `calendar_export.py` |
+| Tests | pytest + Streamlit `AppTest`, run by GitHub Actions |
+| Hosting | Streamlit Community Cloud |
 
----
+## 🚀 Run it locally
 
-## 🚀 Run Locally
-
-Follow these simple steps to set up NomadSquad on your local system 👇
-
-### 1️⃣ Clone the Repository
+**1. Clone**
 
 ```bash
 git clone https://github.com/Ath-12/ai-planner-final.git
 cd ai-planner-final
-2️⃣ Create and Activate a Virtual Environment
-Windows (PowerShell / CMD)
+```
 
-bash
-Copy code
+**2. Create a virtual environment and install**
+
+```bash
 python -m venv venv
-.\venv\Scripts\activate
-Mac / Linux
-
-bash
-Copy code
-python3 -m venv venv
-source venv/bin/activate
-3️⃣ Install Dependencies
-bash
-Copy code
+# Windows:      .\venv\Scripts\activate
+# macOS/Linux:  source venv/bin/activate
 pip install -r requirements.txt
-4️⃣ Add Your API Keys
-Create a folder called .streamlit and inside it, make a file named secrets.toml:
+```
 
-bash
-Copy code
-mkdir .streamlit
-Then open and edit:
+**3. Add your keys**
 
-bash
-Copy code
-nano .streamlit/secrets.toml
-Add your keys:
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
 
-toml
-Copy code
-GEMINI_API_KEY = "your_gemini_api_key_here"
-PPLX_API_KEY = "your_perplexity_api_key_here"
-EXCHANGE_RATE_API_KEY = "your_exchangerate_api_key_here"
-⚠️ Note: secrets.toml is ignored by Git for security. Do not commit this file.
+Open `.streamlit/secrets.toml` and fill in at least `GEMINI_API_KEY`. `PPLX_API_KEY` and `EXCHANGE_RATE_API_KEY` are optional; the app works without them and tells you what's missing. `secrets.toml` is git-ignored.
 
-5️⃣ Run the App
-bash
-Copy code
+**4. Run**
+
+```bash
 streamlit run app.py
-Then open your browser and go to:
-👉 http://localhost:8501
+```
 
-🧩 Future Enhancements
-🌅 Destination Hero Images (Unsplash integration for auto-image banners)
+Then open http://localhost:8501.
 
-🧭 “Trip Presets” — Quick buttons for Romantic, Backpacker, Luxury, Foodie, and Offbeat modes
+## 🧪 Tests
 
-💾 Save multiple itineraries directly in the browser (local storage)
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
 
-💬 Multi-language support for AI output (English, French, Spanish, Japanese)
+The tests run the real `app.py` with Gemini, Perplexity and ExchangeRate-API replaced by fakes, so they need no keys, no internet, and cost nothing.
 
-🎭 “Serious / Funny” tone toggle for AI personality customization
+## 📁 Project structure
 
-🗺️ Interactive map view of itinerary stops
+```
+app.py                  UI, form, prompt, AI calls, results tabs
+pdf_export.py           Plan → PDF
+calendar_export.py      Itinerary → .ics calendar file
+fonts/                  DejaVu Sans (open licence, see LICENSE-DejaVu.txt)
+tests/test_app.py       Automated tests
+.streamlit/config.toml  Theme
+.streamlit/secrets.toml.example   Key names (copy to secrets.toml)
+```
 
-🤝 Contributing
-Contributions are welcome!
-If you have ideas for features, bug fixes, or UI improvements:
+## 🧩 Ideas for later
 
-bash
-Copy code
-# Fork the repository
-# Create your feature branch
-git checkout -b feature/YourFeatureName
+- Map view of each day's stops
+- Save and compare several trips
+- Multi-language plans
+- Ask Gemini for structured JSON instead of Markdown sections
 
-# Commit your changes
-git commit -m "✨ Add: Your short feature description"
+## 👨‍💻 Author
 
-# Push to your branch
-git push origin feature/YourFeatureName
-
-# Create a Pull Request on GitHub
+**Atharva Palsuledesai** · [@Ath-12](https://github.com/Ath-12)
