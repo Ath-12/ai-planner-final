@@ -112,19 +112,23 @@ if "links_output" not in st.session_state: st.session_state.links_output = []
 # ======================
 # HELPERS
 # ======================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_exchange_rate(home_currency="INR", dest_currency="USD"):
-    if not EXCHANGE_RATE_API_KEY or home_currency == dest_currency:
-        return 1.0, dest_currency
+    """Return (rate, problem). rate is None when no live rate is available, so
+    the app never shows a home-currency amount labelled as another currency."""
+    if home_currency == dest_currency:
+        return 1.0, None
+    if not EXCHANGE_RATE_API_KEY:
+        return None, "currency conversion is off (no EXCHANGE_RATE_API_KEY)"
     url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/pair/{home_currency}/{dest_currency}"
     try:
         r = requests.get(url, timeout=6); r.raise_for_status()
         data = r.json()
-        if data.get("result") == "success": return data.get("conversion_rate", 1.0), dest_currency
-        st.warning("Could not fetch live exchange rate. Using 1.0")
+        if data.get("result") == "success" and data.get("conversion_rate"):
+            return float(data["conversion_rate"]), None
+        return None, f"the exchange-rate service said: {data.get('error-type', 'unknown error')}"
     except Exception:
-        st.warning("Network error fetching exchange rate. Using 1.0")
-    return 1.0, dest_currency
+        return None, "the exchange-rate service could not be reached"
 
 def maps_search_url(query: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={up.quote(query)}"
@@ -260,15 +264,23 @@ with col2:
     origin_city = st.text_input("🏙️ Your Origin City", placeholder="Enter Origin City...")
     st.session_state.dest_currency_select = st.selectbox("💲 Destination Currency (for conversion)", currency_codes, index=1, key='dest_currency_selector')
 
-rate, actual_dest_code = get_exchange_rate(st.session_state.home_currency, st.session_state.dest_currency_select)
-st.session_state.exchange_rate = rate
-st.session_state.dest_currency = actual_dest_code
+rate, rate_problem = get_exchange_rate(st.session_state.home_currency, st.session_state.dest_currency_select)
+if rate is None:
+    # No live rate: keep everything in the home currency rather than guess.
+    st.session_state.exchange_rate = 1.0
+    st.session_state.dest_currency = st.session_state.home_currency
+else:
+    st.session_state.exchange_rate = rate
+    st.session_state.dest_currency = st.session_state.dest_currency_select
 
 max_budget_home = 50000 if st.session_state.home_currency != "JPY" else 5000000
 st.session_state.home_budget = st.slider(f"💰 Budget per person/day ({st.session_state.home_currency})", 100, max_budget_home, st.session_state.home_budget, 100)
 
 converted_budget = st.session_state.home_budget * st.session_state.exchange_rate
 st.markdown(f"👉 Approx. **{converted_budget:,.2f} {st.session_state.dest_currency}** per person/day")
+if rate_problem:
+    st.caption(f"⚠️ No live rate to {st.session_state.dest_currency_select}: {rate_problem}. "
+               f"Your budget stays in {st.session_state.home_currency} and NomadSquad will plan with that.")
 st.markdown("---")
 
 # ======================
