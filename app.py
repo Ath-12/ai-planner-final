@@ -462,9 +462,9 @@ if st.session_state.final_output:
         else:
             itinerary = rest
 
-    with t1: st.markdown(overview or raw, unsafe_allow_html=True)
-    with t2: st.markdown(itinerary or raw, unsafe_allow_html=True)
-    with t3: st.markdown(tips or raw, unsafe_allow_html=True)
+    with t1: st.markdown(overview or raw)
+    with t2: st.markdown(itinerary or raw)
+    with t3: st.markdown(tips or raw)
     with t4:
         if links:
             st.markdown("**🔎 Picked by Perplexity from a live web search**")
