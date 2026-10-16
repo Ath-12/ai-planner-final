@@ -238,6 +238,33 @@ def make_gemini_itinerary(client, prompt):
     return None, "Gemini request failed. " + " | ".join(errors)
 
 
+def split_sections(md: str):
+    """Split the plan into (overview, itinerary, tips).
+
+    1) Look for the three main headings by keyword, in order (works even if
+       the AI changes the emoji or wording around them).
+    2) Otherwise split on the highest-level headings, in order.
+    Returns None if neither works, and the app then shows the whole plan."""
+    lines = md.splitlines()
+    heads = [(i, l) for i, l in enumerate(lines) if re.match(r"^#{1,3}\s", l)]
+
+    def find(words, after):
+        return next((i for i, l in heads if i > after and any(w in l.lower() for w in words)), None)
+
+    a = find(["overview"], -1)
+    b = find(["itinerary", "adventure"], a if a is not None else -1)
+    c = find(["tips", "essential"], b if b is not None else -1)
+    if None not in (a, b, c):
+        cuts = [a, b, c, len(lines)]
+    else:
+        top = min((len(l) - len(l.lstrip("#")) for _, l in heads), default=0)
+        starts = [i for i, l in heads if len(l) - len(l.lstrip("#")) == top]
+        if len(starts) < 3:
+            return None
+        cuts = [starts[0], starts[1], starts[2], len(lines)]
+    return tuple("\n".join(lines[cuts[k]:cuts[k + 1]]).strip() for k in range(3))
+
+
 @st.cache_data(show_spinner=False)
 def cached_pdf(markdown_text: str, title: str) -> bytes:
     """Build the PDF once per plan instead of on every rerun."""
@@ -451,16 +478,8 @@ if st.session_state.final_output:
     links = st.session_state.links_output or []
     plan_dest = st.session_state.get("plan_destination") or destination or "Trip"
 
-    # split by headers
-    overview, itinerary, tips = "", "", ""
-    if "### 🎉 Your NomadSquad Trip Overview" in raw and "### 🗺️" in raw:
-        overview = raw.split("### 🗺️",1)[0].split("### 🎉",1)[-1]
-        rest = "### 🗺️" + raw.split("### 🗺️",1)[1]
-        if "### ✨" in rest:
-            itinerary = rest.split("### ✨",1)[0]
-            tips = "### ✨" + rest.split("### ✨",1)[1]
-        else:
-            itinerary = rest
+    sections = split_sections(raw)
+    overview, itinerary, tips = sections if sections else ("", "", "")
 
     with t1: st.markdown(overview or raw)
     with t2: st.markdown(itinerary or raw)
