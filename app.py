@@ -481,7 +481,7 @@ if st.session_state.final_output:
     if st.sidebar.button("🔄 Reset Trip"):
         st.session_state.final_output = None
         st.session_state.links_output = []
-        st.experimental_rerun()
+        st.rerun()
 
     # OPTIONAL: If you want to stop execution after rendering to avoid extra reruns:
     st.stop()
