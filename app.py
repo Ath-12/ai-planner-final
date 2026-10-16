@@ -371,7 +371,8 @@ with st.form("planner_form"):
 # PROMPT (funny + lingo + month packing)
 # ======================
 def build_prompt(destination, duration, people, budget_dest_currency, dest_currency_code, travel_vibe, accommodation, pace,
-                 origin_country, origin_city, transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests):
+                 origin_country, origin_city, transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests,
+                 min_rating=None, must_have=None):
     accomm_str = ", ".join(accommodation) if accommodation else "Any suitable"
     vibe_str   = ", ".join(travel_vibe) if travel_vibe else "General Tourist"
     food_str   = ", ".join(food_prefs) if food_prefs else "No specific preferences"
@@ -393,6 +394,9 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
         f"Food: {food_str}\n"
         f"Local Transport Pref: {transport_prefs_local}\n"
         f"Requests: {special_requests or 'None'}\n"
+        f"Stay filters: minimum guest rating {min_rating or 'any'}/5; must-have amenities: {', '.join(must_have or []) or 'none'}\n"
+        f"Total budget for the group: about {budget_dest_currency * people * duration:,.0f} {dest_currency_code} "
+        f"({people} people x {duration} days)\n"
         f"--- RULES ---\n"
         f"1) In the OVERVIEW, give seasonal/weather context for {destination} in {travel_month} (°C), "
         f"and a concise PACKING LIST tailored to the season (e.g., rain gear in monsoon, layers in winter, sunscreen in summer).\n"
@@ -400,7 +404,7 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
         f"3) TIPS: Include arrival & local transport guidance, safety, budget hacks, and a 'Local Lingo' mini-glossary "
         f"(5–10 short entries: phrase = meaning + when to use).\n"
         f"4) FOOD: Suggest specific eateries/dishes respecting preferences; add price hints in {dest_currency_code}.\n"
-        f"5) ACCOMMODATION: Suggest 1–2 options that match style & budget with brief WHY they fit.\n"
+        f"5) ACCOMMODATION: Suggest 1–2 options that match style, budget and the stay filters, with brief WHY they fit.\n"
         f"6) Keep it structured EXACTLY in these headings:\n"
         f"### 🎉 Your NomadSquad Trip Overview & Seasonal Intel! 🎉\n"
         f"### 🗺️ Your Awesome {duration}-Day Adventure Itinerary! 🗺️\n"
@@ -436,7 +440,8 @@ if submitted:
             prompt = build_prompt(
                 destination, duration, num_people, budget_for_ai, dest_currency_for_ai,
                 travel_vibe, accommodation, pace, origin_country, origin_city,
-                transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests
+                transport_to_dest, travel_month, food_prefs, transport_prefs_local, special_requests,
+                min_rating, must_have
             )
             research_query = f"{destination} best {(', '.join(accommodation) or 'hotels')} near top sights, " \
                              f"booking pages and review links; min rating {min_rating}; must-have {', '.join(must_have) or 'none'}"
@@ -458,6 +463,8 @@ if submitted:
                 st.session_state.links_problem = links_problem
                 st.session_state.plan_destination = destination
                 st.session_state.plan_stays = accommodation
+                st.session_state.plan_total = (f"{budget_for_ai * num_people * duration:,.0f} {dest_currency_for_ai} "
+                                               f"for {num_people} {'person' if num_people == 1 else 'people'} × {duration} days")
                 st.session_state.plans_generated += 1
                 st.session_state.last_generated_at = time.time()
 
@@ -481,7 +488,10 @@ if st.session_state.final_output:
     sections = split_sections(raw)
     overview, itinerary, tips = sections if sections else ("", "", "")
 
-    with t1: st.markdown(overview or raw)
+    with t1:
+        if st.session_state.get("plan_total"):
+            st.markdown(f"💰 **Estimated total budget:** {st.session_state.plan_total}")
+        st.markdown(overview or raw)
     with t2: st.markdown(itinerary or raw)
     with t3: st.markdown(tips or raw)
     with t4:
