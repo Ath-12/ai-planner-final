@@ -1,7 +1,7 @@
 import streamlit as st
 from google import genai
 from google.genai import types
-import requests, datetime, re
+import requests, datetime, re, time
 from concurrent.futures import ThreadPoolExecutor
 import urllib.parse as up
 from pdf_export import build_pdf_bytes
@@ -385,9 +385,22 @@ def build_prompt(destination, duration, people, budget_dest_currency, dest_curre
 # ======================
 # GENERATE (writes to session_state)
 # ======================
+# Every plan is a paid AI call on a public app, so each visitor gets a short
+# cooldown and a cap per session. (A visitor can reset it by reloading; the
+# hard limit is the quota/budget set on the API key itself.)
+MAX_PLANS_PER_SESSION = 5
+COOLDOWN_SECONDS = 30
+st.session_state.setdefault("plans_generated", 0)
+st.session_state.setdefault("last_generated_at", 0.0)
+
 if submitted:
+    wait = COOLDOWN_SECONDS - (time.time() - st.session_state.last_generated_at)
     if not destination:
         st.error("🚨 Please enter a destination.")
+    elif st.session_state.plans_generated >= MAX_PLANS_PER_SESSION:
+        st.warning(f"🧳 You've planned {MAX_PLANS_PER_SESSION} trips this session. Come back later for more!")
+    elif wait > 0:
+        st.warning(f"⏳ Give NomadSquad {int(wait) + 1} more seconds before the next plan.")
     else:
         budget_for_ai = st.session_state.home_budget * st.session_state.exchange_rate
         dest_currency_for_ai = st.session_state.dest_currency
@@ -418,6 +431,8 @@ if submitted:
                 st.session_state.links_problem = links_problem
                 st.session_state.plan_destination = destination
                 st.session_state.plan_stays = accommodation
+                st.session_state.plans_generated += 1
+                st.session_state.last_generated_at = time.time()
 
                 st.success("Trip generated! Scroll down to view.")
 
