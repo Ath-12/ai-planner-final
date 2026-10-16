@@ -269,7 +269,6 @@ st.session_state.home_budget = st.slider(f"💰 Budget per person/day ({st.sessi
 
 converted_budget = st.session_state.home_budget * st.session_state.exchange_rate
 st.markdown(f"👉 Approx. **{converted_budget:,.2f} {st.session_state.dest_currency}** per person/day")
-st.link_button("🗺️ Open Destination in Google Maps", maps_search_url(origin_city or "Your city"))
 st.markdown("---")
 
 # ======================
